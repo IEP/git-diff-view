@@ -17,12 +17,29 @@ if (probe.exitCode !== 0) {
 
 const api = makeApiHandler(repoPath);
 
+const hostname = process.env.HOST ?? "127.0.0.1";
+const port = Number(process.env.PORT ?? 3000);
+
+// DNS-rebinding guard: a hostile page can point its own domain at 127.0.0.1,
+// making its requests same-origin in the browser. The Host header still names
+// that domain, so only accept the names we actually serve under.
+const allowedHosts = new Set(
+  ["127.0.0.1", "localhost", "[::1]", hostname].map((h) => `${h}:${port}`),
+);
+
+const isTrustedRequest = (req: Request) =>
+  allowedHosts.has(req.headers.get("host") ?? "") &&
+  req.headers.get("sec-fetch-site") !== "cross-site";
+
 const server = serve({
   // Loopback only: the API serves full file contents from the repository.
-  hostname: process.env.HOST ?? "127.0.0.1",
-  port: Number(process.env.PORT ?? 3000),
+  hostname,
+  port,
   routes: {
-    "/api/*": (req) => api.handler(req),
+    "/api/*": (req) =>
+      isTrustedRequest(req)
+        ? api.handler(req)
+        : Response.json({ error: "Forbidden", message: "Untrusted Host or cross-site request" }, { status: 403 }),
     "/*": index,
   },
   development: process.env.NODE_ENV !== "production" && {
