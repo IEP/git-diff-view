@@ -2,6 +2,7 @@ import { Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { ApiErrorBody } from "@/shared/api";
 import { Git } from "./Git";
+import { GitHub } from "./GitHub";
 
 const CompareParams = Schema.Struct({
   base: Schema.String,
@@ -15,6 +16,10 @@ const FileParams = Schema.Struct({
   oldPath: Schema.optional(Schema.String),
 });
 
+const PullParams = Schema.Struct({
+  number: Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,8}$/)),
+});
+
 const errorResponse = (status: number, error: string, message: string) =>
   HttpServerResponse.json({ error, message } satisfies ApiErrorBody, { status });
 
@@ -25,7 +30,14 @@ const handle = <A, E extends { readonly _tag: string; readonly message: string }
   effect.pipe(
     Effect.flatMap((body) => HttpServerResponse.json(body)),
     Effect.catch((e: E | { readonly _tag: string; readonly message: string }) => {
-      const status = e._tag === "InvalidRef" || e._tag === "SchemaError" ? 400 : 500;
+      const status =
+        e._tag === "InvalidRef" || e._tag === "SchemaError"
+          ? 400
+          : e._tag === "NotGitHub"
+            ? 404
+            : e._tag === "GitHubError"
+              ? 502
+              : 500;
       return errorResponse(status, e._tag, e.message);
     }),
     Effect.orDie,
@@ -70,6 +82,25 @@ const Routes = Layer.mergeAll(
       }),
     ),
   ),
+  HttpRouter.add(
+    "GET",
+    "/api/pulls",
+    handle(Effect.gen(function* () {
+      const github = yield* GitHub;
+      return yield* github.pulls;
+    })),
+  ),
+  HttpRouter.add(
+    "GET",
+    "/api/pull",
+    handle(
+      Effect.gen(function* () {
+        const github = yield* GitHub;
+        const { number } = yield* HttpServerRequest.schemaSearchParams(PullParams);
+        return yield* github.pull(Number(number));
+      }),
+    ),
+  ),
   // Read-only API: anything else under /api is a 404 (never a fallthrough to the SPA).
   HttpRouter.add("*", "/api/*", errorResponse(404, "NotFound", "No such endpoint").pipe(Effect.orDie)),
 );
@@ -80,6 +111,10 @@ const Routes = Layer.mergeAll(
  */
 export const makeApiHandler = (repoPath: string) =>
   HttpRouter.toWebHandler(
-    Routes.pipe(Layer.provideMerge(Git.layer(repoPath)), Layer.provide(HttpServer.layerServices)),
+    Routes.pipe(
+      Layer.provideMerge(GitHub.layer),
+      Layer.provideMerge(Git.layer(repoPath)),
+      Layer.provide(HttpServer.layerServices),
+    ),
     { disableLogger: true },
   );

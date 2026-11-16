@@ -68,6 +68,47 @@ export interface FileDiffResponse {
   readonly tooLarge: boolean;
 }
 
+/** The GitHub repository behind one of the local remotes. Never carries the raw URL (it may embed credentials). */
+export interface GitHubRepo {
+  readonly owner: string;
+  readonly name: string;
+  /** Local remote name it was found under, e.g. "upstream" or "origin". */
+  readonly remote: string;
+}
+
+export interface PullSummary {
+  readonly number: number;
+  readonly title: string;
+  readonly author: string;
+  readonly baseRef: string;
+  readonly headRef: string;
+  readonly isDraft: boolean;
+  /** Opened from a fork. */
+  readonly isCrossRepository: boolean;
+  readonly updatedAt: string;
+  readonly url: string;
+}
+
+export interface PullsResponse {
+  /** Null when no `upstream` / `origin` remote points at github.com. */
+  readonly github: GitHubRepo | null;
+  readonly pulls: ReadonlyArray<PullSummary>;
+}
+
+/**
+ * A pull request resolved to two local commits. `base` is the merge-base of the
+ * PR's base and head (GitHub's "Files changed" view), not the base branch tip.
+ */
+export interface PullResolved {
+  readonly number: number;
+  readonly title: string;
+  readonly url: string;
+  readonly baseRef: string;
+  readonly headRef: string;
+  readonly base: string;
+  readonly head: string;
+}
+
 export interface ApiErrorBody {
   readonly error: string;
   readonly message: string;

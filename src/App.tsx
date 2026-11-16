@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowLeftRightIcon,
   Columns2Icon,
+  ExternalLinkIcon,
   FolderGit2Icon,
   Loader2Icon,
   MoonIcon,
@@ -11,6 +12,7 @@ import {
 } from "lucide-react";
 import { DiffPane } from "@/components/DiffPane";
 import { FileTree } from "@/components/FileTree";
+import { PullPicker } from "@/components/PullPicker";
 import { RefPicker } from "@/components/RefPicker";
 import { Button } from "@/components/ui/button";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
@@ -29,13 +31,24 @@ import "./index.css";
 
 function readUrl() {
   const p = new URLSearchParams(window.location.search);
-  return { base: p.get("base") ?? "", head: p.get("head") ?? "", file: p.get("file") };
+  const pr = p.get("pr");
+  return {
+    base: p.get("base") ?? "",
+    head: p.get("head") ?? "",
+    file: p.get("file"),
+    pr: pr && /^[1-9][0-9]{0,8}$/.test(pr) ? Number(pr) : null,
+  };
 }
 
-function writeUrl(state: { base: string; head: string; file: string | null }) {
+function writeUrl(state: { base: string; head: string; file: string | null; pr: number | null }) {
   const p = new URLSearchParams();
-  if (state.base) p.set("base", state.base);
-  if (state.head) p.set("head", state.head);
+  // A PR link re-resolves on load, so it picks up new pushes; base/head SHAs would pin a stale snapshot.
+  if (state.pr) {
+    p.set("pr", String(state.pr));
+  } else {
+    if (state.base) p.set("base", state.base);
+    if (state.head) p.set("head", state.head);
+  }
   if (state.file) p.set("file", state.file);
   const next = `${window.location.pathname}${p.size ? `?${p}` : ""}`;
   if (next !== `${window.location.pathname}${window.location.search}`) window.history.replaceState(null, "", next);
@@ -85,6 +98,17 @@ export function App() {
   const [base, setBase] = useState(initial.base);
   const [head, setHead] = useState(initial.head);
   const [selected, setSelected] = useState<string | null>(initial.file);
+  const [pr, setPr] = useState<number | null>(initial.pr);
+
+  // Picking revisions by hand leaves pull-request mode.
+  const chooseBase = useCallback((ref: string) => {
+    setPr(null);
+    setBase(ref);
+  }, []);
+  const chooseHead = useCallback((ref: string) => {
+    setPr(null);
+    setHead(ref);
+  }, []);
 
   const [mode, setMode] = usePref<"split" | "unified">("gdv.mode", "split");
   const [wrap, setWrap] = usePref<"on" | "off">("gdv.wrap", "off");
@@ -102,13 +126,27 @@ export function App() {
   const repoData = repo.status === "success" ? repo.data : null;
   const refsData = refs.status === "success" ? refs.data : null;
 
+  // GitHub pull requests: the list is only shown when a remote points at github.com.
+  const pulls = useAsync((s) => api.pulls(s), []);
+  const showPulls = (pulls.status === "success" && pulls.data.github !== null) || pulls.status === "error";
+  const pull = useAsync(pr ? (s) => api.pull(pr, s) : null, [pr]);
+  const pullData = pull.status === "success" && pull.data.number === pr ? pull.data : null;
+
+  // A resolved PR drives base (its merge-base) and head.
+  useEffect(() => {
+    if (!pullData) return;
+    setBase(pullData.base);
+    setHead(pullData.head);
+  }, [pullData]);
+
   // Fill in defaults once we know the repo, unless the URL already chose.
   useEffect(() => {
-    if (!repoData || !refsData || (base && head)) return;
+    if (pr || !repoData || !refsData || (base && head)) return;
     const d = defaultRefs(repoData, refsData);
     if (!base) setBase(d.base);
     if (!head) setHead(d.head);
-  }, [repoData, refsData]); // eslint-disable-line react-hooks/exhaustive-deps
+    // `pr` is a dependency so leaving PR mode (e.g. after a failed load) fills any still-empty side.
+  }, [repoData, refsData, pr]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const compare = useAsync(base && head ? (s) => api.compare(base, head, s) : null, [base, head]);
   const compareData = compare.status === "success" ? compare.data : null;
@@ -124,7 +162,7 @@ export function App() {
     if (!selected || !compareData.files.some((f) => f.path === selected)) setSelected(ordered[0]?.path ?? null);
   }, [compareData]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => writeUrl({ base, head, file: selected }), [base, head, selected]);
+  useEffect(() => writeUrl({ base, head, file: selected, pr }), [base, head, selected, pr]);
 
   const go = useCallback(
     (delta: number) => {
@@ -158,13 +196,34 @@ export function App() {
             {repoData?.currentBranch && <span className="text-muted-foreground truncate text-xs">on {repoData.currentBranch}</span>}
           </div>
 
+          {showPulls && (
+            <div className="flex items-center gap-1">
+              <PullPicker pulls={pulls} value={pr} onChange={setPr} />
+              {pullData && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="ghost" size="icon" className="size-8" asChild>
+                      <a href={pullData.url} target="_blank" rel="noreferrer" aria-label={`Open #${pullData.number} on GitHub`}>
+                        <ExternalLinkIcon className="size-4" />
+                      </a>
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Open on GitHub · {pullData.baseRef} ← {pullData.headRef}
+                  </TooltipContent>
+                </Tooltip>
+              )}
+              <Separator orientation="vertical" className="mx-1 h-5!" />
+            </div>
+          )}
+
           <div className="flex items-center gap-1.5">
             <RefPicker
               label="Base"
               value={base}
               refs={refsData}
               resolvedSha={compareData?.base.sha}
-              onChange={setBase}
+              onChange={chooseBase}
             />
             <Tooltip>
               <TooltipTrigger asChild>
@@ -174,6 +233,7 @@ export function App() {
                   className="size-8"
                   aria-label="Swap base and head"
                   onClick={() => {
+                    setPr(null);
                     setBase(head);
                     setHead(base);
                   }}
@@ -188,7 +248,7 @@ export function App() {
               value={head}
               refs={refsData}
               resolvedSha={compareData?.head.sha}
-              onChange={setHead}
+              onChange={chooseHead}
             />
             {compare.status === "loading" && <Loader2Icon className="text-muted-foreground size-4 animate-spin" />}
           </div>
@@ -241,6 +301,14 @@ export function App() {
         {/* ---------------------------------------------------------------- body */}
         {fatal ? (
           <Message tone="error">{fatal.message}</Message>
+        ) : pr && pull.status === "error" ? (
+          <Message tone="error">
+            Couldn't load pull request #{pr}: {pull.error.message}
+          </Message>
+        ) : pr && !pullData ? (
+          <Message>
+            <Loader2Icon className="size-4 animate-spin" /> Loading pull request #{pr}…
+          </Message>
         ) : compare.status === "error" ? (
           <Message tone="error">{compare.error.message}</Message>
         ) : !compareData ? (

@@ -32,7 +32,7 @@ function iconFor(value: string, refs: RefsResponse | null) {
   return GitCommitHorizontalIcon;
 }
 
-function relativeDate(iso: string): string {
+export function relativeDate(iso: string): string {
   const diff = (Date.now() - new Date(iso).getTime()) / 1000;
   const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
     ["year", 31536000],

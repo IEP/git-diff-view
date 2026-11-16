@@ -44,8 +44,27 @@ const RECENT_COMMITS = 300;
 /**
  * Every git invocation goes through this allow-list. The app is read-only by
  * construction: there is no code path that can run a mutating subcommand.
+ * (`ls-remote` is only ever called with `--get-url`, which reads config.)
+ *
+ * The single exception is `fetchCommits`, which has its own fixed argument
+ * list: it adds objects for pull-request commits and never touches any ref,
+ * FETCH_HEAD, the index or the working tree.
  */
-const READ_ONLY_SUBCOMMANDS = new Set(["rev-parse", "for-each-ref", "log", "diff", "ls-tree", "cat-file"]);
+const READ_ONLY_SUBCOMMANDS = new Set([
+  "rev-parse",
+  "for-each-ref",
+  "log",
+  "diff",
+  "ls-tree",
+  "cat-file",
+  "merge-base",
+  "ls-remote",
+]);
+
+/** A full object id (SHA-1 or SHA-256). Anything from outside must match before git sees it. */
+export const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+const FETCH_TIMEOUT = "90 seconds";
 
 /** Global flags prepended to every call: no pager, no colour, no external diff tools, no locks. */
 const GLOBAL_ARGS = [
@@ -81,6 +100,12 @@ export class Git extends Context.Service<
       path: string,
       oldPath: string | null,
     ): Effect.Effect<FileDiffResponse, InvalidRef | GitError>;
+    /** The URL configured for `remote` (after insteadOf rewriting), or null if there is no such remote. */
+    remoteUrl(remote: string): Effect.Effect<string | null, GitError>;
+    hasCommit(sha: string): Effect.Effect<boolean>;
+    mergeBase(a: string, b: string): Effect.Effect<string, GitError>;
+    /** Download commits by id from `remote` without creating or moving any ref. */
+    fetchCommits(remote: string, shas: ReadonlyArray<string>): Effect.Effect<void, GitError>;
   }
 >()("git-diff-view/server/Git") {
   /** Build the service for the repository containing `repoPath`. */
@@ -90,11 +115,8 @@ export class Git extends Context.Service<
       Effect.gen(function* () {
         const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
-        const runIn = Effect.fnUntraced(function* (cwd: string, args: ReadonlyArray<string>) {
-          const sub = args[0];
-          if (sub === undefined || !READ_ONLY_SUBCOMMANDS.has(sub)) {
-            return yield* new GitError({ message: `Refusing to run git subcommand "${sub}"`, args: [...args] });
-          }
+        /** Spawn git without the allow-list check. Only `runIn` and `fetchCommits` call this. */
+        const spawnGit = Effect.fnUntraced(function* (cwd: string, args: ReadonlyArray<string>) {
           const fullArgs = [...GLOBAL_ARGS, ...args];
           return yield* Effect.scoped(
             Effect.gen(function* () {
@@ -122,6 +144,14 @@ export class Git extends Context.Service<
               Effect.fail(new GitError({ message: `Failed to run git: ${cause.message}`, args: [...args] })),
             ),
           );
+        });
+
+        const runIn = Effect.fnUntraced(function* (cwd: string, args: ReadonlyArray<string>) {
+          const sub = args[0];
+          if (sub === undefined || !READ_ONLY_SUBCOMMANDS.has(sub)) {
+            return yield* new GitError({ message: `Refusing to run git subcommand "${sub}"`, args: [...args] });
+          }
+          return yield* spawnGit(cwd, args);
         });
 
         // Resolve the repository root once, at startup.
@@ -300,7 +330,59 @@ export class Git extends Context.Service<
           } satisfies FileDiffResponse;
         });
 
-        return Git.of({ info, refs, resolve, compare, fileDiff });
+        // -------------------------------------------------------------------
+        // remotes / pull-request support
+        // -------------------------------------------------------------------
+
+        const remoteUrl = Effect.fn("Git.remoteUrl")(function* (remote: string) {
+          // `--get-url` echoes its argument back when no such remote exists.
+          const url = (yield* git("ls-remote", "--get-url", "--end-of-options", remote)).trim();
+          return url === "" || url === remote ? null : url;
+        });
+
+        const hasCommit = (sha: string) =>
+          OBJECT_ID.test(sha)
+            ? git("cat-file", "-e", `${sha}^{commit}`).pipe(
+                Effect.as(true),
+                Effect.orElseSucceed(() => false),
+              )
+            : Effect.succeed(false);
+
+        const mergeBase = Effect.fn("Git.mergeBase")(function* (a: string, b: string) {
+          if (!OBJECT_ID.test(a) || !OBJECT_ID.test(b)) {
+            return yield* new GitError({ message: "merge-base expects full commit ids", args: [a, b] });
+          }
+          return (yield* git("merge-base", a, b)).trim();
+        });
+
+        const fetchCommits = Effect.fn("Git.fetchCommits")(function* (remote: string, shas: ReadonlyArray<string>) {
+          if (!/^[A-Za-z0-9._-]+$/.test(remote) || remote.startsWith("-") || shas.some((s) => !OBJECT_ID.test(s))) {
+            return yield* new GitError({ message: "Refusing to fetch: invalid remote or commit id", args: [remote, ...shas] });
+          }
+          if (shas.length === 0) return;
+          const args = [
+            "-c", "gc.auto=0",
+            "-c", "maintenance.auto=false",
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--no-write-fetch-head",
+            // No destination in the refspecs and an empty refmap: nothing under refs/ is created or updated.
+            "--refmap=",
+            "--end-of-options",
+            remote,
+            ...shas,
+          ];
+          yield* spawnGit(root, args).pipe(
+            Effect.timeoutOrElse({
+              duration: FETCH_TIMEOUT,
+              orElse: () => Effect.fail(new GitError({ message: `git fetch from "${remote}" timed out`, args })),
+            }),
+          );
+        });
+
+        return Git.of({ info, refs, resolve, compare, fileDiff, remoteUrl, hasCommit, mergeBase, fetchCommits });
       }),
     ).pipe(Layer.provide(BunServices.layer));
 }

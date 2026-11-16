@@ -3,6 +3,8 @@ import type {
   ApiErrorBody,
   CompareResponse,
   FileDiffResponse,
+  PullResolved,
+  PullsResponse,
   RefsResponse,
   RepoInfo,
 } from "@/shared/api";
@@ -35,6 +37,8 @@ export const api = {
     get<CompareResponse>("/api/compare", { base, head }, signal),
   file: (base: string, head: string, path: string, oldPath: string | null, signal: AbortSignal) =>
     get<FileDiffResponse>("/api/file", { base, head, path, oldPath }, signal),
+  pulls: (signal: AbortSignal) => get<PullsResponse>("/api/pulls", {}, signal),
+  pull: (number: number, signal: AbortSignal) => get<PullResolved>("/api/pull", { number: String(number) }, signal),
 };
 
 export type AsyncState<T> =
