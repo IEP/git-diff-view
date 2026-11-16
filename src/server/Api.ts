@@ -16,6 +16,10 @@ const FileParams = Schema.Struct({
   oldPath: Schema.optional(Schema.String),
 });
 
+const GraphParams = Schema.Struct({
+  limit: Schema.optional(Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,4}$/))),
+});
+
 const PullParams = Schema.Struct({
   number: Schema.String.check(Schema.isPattern(/^[1-9][0-9]{0,8}$/)),
 });
@@ -59,6 +63,17 @@ const Routes = Layer.mergeAll(
       const git = yield* Git;
       return yield* git.refs;
     })),
+  ),
+  HttpRouter.add(
+    "GET",
+    "/api/graph",
+    handle(
+      Effect.gen(function* () {
+        const git = yield* Git;
+        const { limit } = yield* HttpServerRequest.schemaSearchParams(GraphParams);
+        return yield* git.graph(limit ? Number(limit) : 500);
+      }),
+    ),
   ),
   HttpRouter.add(
     "GET",

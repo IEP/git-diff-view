@@ -3,6 +3,7 @@ import type {
   ApiErrorBody,
   CompareResponse,
   FileDiffResponse,
+  GraphResponse,
   PullResolved,
   PullsResponse,
   RefsResponse,
@@ -33,6 +34,7 @@ async function get<T>(path: string, params: Record<string, string | null | undef
 export const api = {
   repo: (signal: AbortSignal) => get<RepoInfo>("/api/repo", {}, signal),
   refs: (signal: AbortSignal) => get<RefsResponse>("/api/refs", {}, signal),
+  graph: (limit: number, signal: AbortSignal) => get<GraphResponse>("/api/graph", { limit: String(limit) }, signal),
   compare: (base: string, head: string, signal: AbortSignal) =>
     get<CompareResponse>("/api/compare", { base, head }, signal),
   file: (base: string, head: string, path: string, oldPath: string | null, signal: AbortSignal) =>

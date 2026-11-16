@@ -109,6 +109,32 @@ export interface PullResolved {
   readonly head: string;
 }
 
+export type GraphRefKind = "head" | "branch" | "remote" | "tag";
+
+export interface GraphRef {
+  readonly kind: GraphRefKind;
+  /** Short name: "main", "origin/main", "v1.0", or "HEAD" for a detached HEAD. */
+  readonly name: string;
+}
+
+export interface GraphCommit {
+  readonly sha: string;
+  readonly shortSha: string;
+  /** Parent ids, first parent first. May name commits outside the loaded window. */
+  readonly parents: ReadonlyArray<string>;
+  readonly refs: ReadonlyArray<GraphRef>;
+  readonly subject: string;
+  readonly author: string;
+  readonly date: string;
+}
+
+export interface GraphResponse {
+  /** Newest first, children always before their parents. */
+  readonly commits: ReadonlyArray<GraphCommit>;
+  /** More history exists beyond `commits`. */
+  readonly truncated: boolean;
+}
+
 export interface ApiErrorBody {
   readonly error: string;
   readonly message: string;

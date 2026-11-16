@@ -8,6 +8,9 @@ import type {
   CompareResponse,
   FileChange,
   FileDiffResponse,
+  GraphCommit,
+  GraphRef,
+  GraphResponse,
   RefEntry,
   RefsResponse,
   RepoInfo,
@@ -40,6 +43,7 @@ export class NotARepository extends Schema.TaggedError<NotARepository>()("NotARe
 /** Files larger than this are not shipped to the browser in full. */
 const MAX_BLOB_BYTES = 2 * 1024 * 1024;
 const RECENT_COMMITS = 300;
+export const MAX_GRAPH_COMMITS = 5000;
 
 /**
  * Every git invocation goes through this allow-list. The app is read-only by
@@ -92,6 +96,8 @@ export class Git extends Context.Service<
   {
     readonly info: Effect.Effect<RepoInfo, GitError>;
     readonly refs: Effect.Effect<RefsResponse, GitError>;
+    /** Commit graph of every branch, remote branch, tag and HEAD, newest first. */
+    graph(limit: number): Effect.Effect<GraphResponse, GitError>;
     resolve(ref: string): Effect.Effect<ResolvedRef, InvalidRef | GitError>;
     compare(base: string, head: string): Effect.Effect<CompareResponse, InvalidRef | GitError>;
     fileDiff(
@@ -228,6 +234,26 @@ export class Git extends Context.Service<
           }
 
           return { branches, remoteBranches, tags, commits } satisfies RefsResponse;
+        });
+
+        const graph = Effect.fn("Git.graph")(function* (limit: number) {
+          const n = Math.min(Math.max(Math.trunc(limit), 1), MAX_GRAPH_COMMITS);
+          const out = yield* git(
+            "log",
+            // Not --all: that would pull in refs/stash and its synthetic index/worktree commits.
+            "--branches",
+            "--remotes",
+            "--tags",
+            "HEAD",
+            "--date-order",
+            "--decorate=full",
+            `-n${n + 1}`, // one extra row tells us whether history continues
+            "--format=%H%x00%P%x00%D%x00%s%x00%an%x00%aI%x1e",
+            "--",
+          ).pipe(Effect.orElseSucceed(() => "")); // empty repository: no HEAD yet
+          const commits = parseGraphLog(out);
+          const truncated = commits.length > n;
+          return { commits: truncated ? commits.slice(0, n) : commits, truncated } satisfies GraphResponse;
         });
 
         // -------------------------------------------------------------------
@@ -382,7 +408,7 @@ export class Git extends Context.Service<
           );
         });
 
-        return Git.of({ info, refs, resolve, compare, fileDiff, remoteUrl, hasCommit, mergeBase, fetchCommits });
+        return Git.of({ info, refs, graph, resolve, compare, fileDiff, remoteUrl, hasCommit, mergeBase, fetchCommits });
       }),
     ).pipe(Layer.provide(BunServices.layer));
 }
@@ -452,6 +478,56 @@ export function parseNumstat(out: string): Map<string, { additions: number; dele
     });
   }
   return result;
+}
+
+/**
+ * Parse `git log --decorate=full --format=%H%x00%P%x00%D%x00%s%x00%an%x00%aI%x1e`.
+ * Records end with RS (0x1e); a subject can't contain NUL or RS.
+ */
+export function parseGraphLog(out: string): Array<GraphCommit> {
+  const commits: Array<GraphCommit> = [];
+  for (const raw of out.split("\x1e")) {
+    const record = raw.replace(/^\n/, "");
+    if (!record) continue;
+    const [sha = "", parents = "", decorations = "", subject = "", author = "", date = ""] = record.split("\0");
+    if (!sha) continue;
+    commits.push({
+      sha,
+      shortSha: sha.slice(0, 7),
+      parents: parents ? parents.split(" ") : [],
+      refs: parseDecorations(decorations),
+      subject,
+      author,
+      date,
+    });
+  }
+  return commits;
+}
+
+/** `%D` with `--decorate=full`: "HEAD -> refs/heads/main, refs/remotes/origin/main, tag: refs/tags/v1". */
+export function parseDecorations(decorations: string): Array<GraphRef> {
+  const refs: Array<GraphRef> = [];
+  for (const part of decorations.split(", ")) {
+    if (!part) continue;
+    let name = part;
+    if (name.startsWith("HEAD -> ")) {
+      refs.push({ kind: "head", name: "HEAD" });
+      name = name.slice("HEAD -> ".length);
+    } else if (name === "HEAD") {
+      refs.push({ kind: "head", name: "HEAD" });
+      continue;
+    }
+    if (name.startsWith("tag: ")) name = name.slice("tag: ".length);
+    if (name.startsWith("refs/heads/")) {
+      refs.push({ kind: "branch", name: name.slice("refs/heads/".length) });
+    } else if (name.startsWith("refs/remotes/")) {
+      if (name.endsWith("/HEAD")) continue; // origin/HEAD symref is noise
+      refs.push({ kind: "remote", name: name.slice("refs/remotes/".length) });
+    } else if (name.startsWith("refs/tags/")) {
+      refs.push({ kind: "tag", name: name.slice("refs/tags/".length) });
+    }
+  }
+  return refs;
 }
 
 /** Same heuristic git uses: a NUL byte in the first 8000 bytes means binary. */
