@@ -132,4 +132,4 @@ When asked to commit / push:
 2. Update `README.md` (usage, Layout section) and this file when behavior, flags or files change.
 3. Stage files by name (no `git add -A`); leave `dist/` and stray files out.
 4. Message: imperative subject that says what the user gets (e.g. "Allow opening the viewer from other machines"), blank line, a body wrapped at ~72 cols explaining what changed and why, then the `Co-Authored-By:` trailer.
-5. Commit straight to `main` and `git push origin main` (Gitea remote `origin`). No branches or PRs for this repo unless asked.
+5. Commit straight to `main`, then `git push origin main` (Gitea) and `git push github main` (GitHub, `IEP/git-diff-view`). No branches or PRs for this repo unless asked.

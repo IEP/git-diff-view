@@ -137,3 +137,7 @@ herdr/git-diff/          The Herdr mod (gpui-kit JS): main.js (state, toolbar bu
 ```
 
 Tests: `bun test`
+
+## License
+
+[MIT](LICENSE)
