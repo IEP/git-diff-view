@@ -152,3 +152,23 @@ export interface ApiErrorBody {
   readonly error: string;
   readonly message: string;
 }
+
+/** One changed line that matched a search of the current comparison. */
+export interface SearchHit {
+  /** Same as `FileChange.path`: the head-side path, or the deleted path. */
+  readonly path: string;
+  /** "old" for a removed line (numbered in the base file), "new" for an added one (head file). */
+  readonly side: "old" | "new";
+  readonly line: number;
+  readonly text: string;
+}
+
+export interface SearchResponse {
+  readonly base: ResolvedRef;
+  readonly head: ResolvedRef;
+  readonly hits: ReadonlyArray<SearchHit>;
+  /** Matching lines in total; `hits` stops at the limit. */
+  readonly total: number;
+  /** The diff was too big to index completely, so later files may be missing. */
+  readonly partial: boolean;
+}

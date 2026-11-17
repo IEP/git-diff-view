@@ -1,6 +1,7 @@
 import { Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { ApiErrorBody } from "@/shared/api";
+import { DiffSearch } from "./DiffIndex";
 import { Git } from "./Git";
 import { GitHub } from "./GitHub";
 
@@ -14,6 +15,14 @@ const FileParams = Schema.Struct({
   head: Schema.String,
   path: Schema.String,
   oldPath: Schema.optional(Schema.String),
+});
+
+const SearchParams = Schema.Struct({
+  base: Schema.String,
+  head: Schema.String,
+  // Literal text, not a pattern. Tabs are fine (pasted indentation); other control characters
+  // and line breaks can't occur within one diff line.
+  q: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200), Schema.isPattern(/^[^\x00-\x08\x0a-\x1f\x7f]*$/)),
 });
 
 const GraphParams = Schema.Struct({
@@ -99,6 +108,17 @@ const Routes = Layer.mergeAll(
   ),
   HttpRouter.add(
     "GET",
+    "/api/search",
+    handle(
+      Effect.gen(function* () {
+        const search = yield* DiffSearch;
+        const { base, head, q } = yield* HttpServerRequest.schemaSearchParams(SearchParams);
+        return yield* search.search(base, head, q);
+      }),
+    ),
+  ),
+  HttpRouter.add(
+    "GET",
     "/api/pulls",
     handle(Effect.gen(function* () {
       const github = yield* GitHub;
@@ -128,6 +148,7 @@ export const makeApiHandler = (repoPath: string) =>
   HttpRouter.toWebHandler(
     Routes.pipe(
       Layer.provideMerge(GitHub.layer),
+      Layer.provideMerge(DiffSearch.layer),
       Layer.provideMerge(Git.layer(repoPath)),
       Layer.provide(HttpServer.layerServices),
     ),

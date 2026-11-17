@@ -9,11 +9,13 @@ import {
   MoonIcon,
   RefreshCwIcon,
   RowsIcon,
+  SearchIcon,
   SunIcon,
   WrapTextIcon,
 } from "lucide-react";
 import { CommitGraph } from "@/components/CommitGraph";
 import { DiffPane } from "@/components/DiffPane";
+import { DiffSearch } from "@/components/DiffSearch";
 import { FileTree } from "@/components/FileTree";
 import { PullPicker } from "@/components/PullPicker";
 import { RefPicker } from "@/components/RefPicker";
@@ -25,7 +27,14 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { api, useAsync, useHeldAsync } from "@/lib/api";
 import { buildTree, filesInTreeOrder } from "@/lib/tree";
-import { WORKTREE, type CompareResponse, type GraphResponse, type RefsResponse, type RepoInfo } from "@/shared/api";
+import {
+  WORKTREE,
+  type CompareResponse,
+  type GraphResponse,
+  type RefsResponse,
+  type RepoInfo,
+  type SearchHit,
+} from "@/shared/api";
 import "./index.css";
 
 // ---------------------------------------------------------------------------
@@ -55,6 +64,15 @@ function writeUrl(state: { base: string; head: string; file: string | null; pr: 
   if (state.file) p.set("file", state.file);
   const next = `${window.location.pathname}${p.size ? `?${p}` : ""}`;
   if (next !== `${window.location.pathname}${window.location.search}`) window.history.replaceState(null, "", next);
+}
+
+function useDebounced<T>(value: T, ms: number): T {
+  const [settled, setSettled] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setSettled(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return settled;
 }
 
 function usePref<T extends string>(key: string, initial: T): [T, (v: T) => void] {
@@ -258,6 +276,28 @@ export function App() {
     [ordered, selectedIndex],
   );
 
+  // "Find in changes": full-text search over the changed lines, in place of the file tree.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const settledQuery = useDebounced(query, 200);
+  const [jump, setJump] = useState<SearchHit | null>(null);
+  const openHit = useCallback((hit: SearchHit) => {
+    setSelected(hit.path);
+    setJump({ ...hit }); // a fresh object, so picking the same hit again scrolls again
+  }, []);
+
+  // IntelliJ's Find in Path shortcut: ⌘⇧F / Ctrl+Shift+F opens the search (or focuses it).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || !e.shiftKey || e.key.toLowerCase() !== "f") return;
+      e.preventDefault();
+      setSearchOpen(true);
+      document.querySelector<HTMLInputElement>('input[aria-label="Search changed lines"]')?.select();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // IntelliJ's F7 / Shift+F7 for next / previous change.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -289,12 +329,27 @@ export function App() {
   ) : (
     <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
       <ResizablePanel defaultSize="28" minSize="15" maxSize="60">
-        <FileTree
-          key={`${compareData.base.sha}..${compareData.head.sha}`}
-          files={compareData.files}
-          selectedPath={selected}
-          onSelect={(f) => setSelected(f.path)}
-        />
+        {searchOpen && (
+          <DiffSearch
+            base={base}
+            head={head}
+            query={query}
+            onQueryChange={setQuery}
+            settled={settledQuery}
+            onOpen={openHit}
+            onClose={() => setSearchOpen(false)}
+            live={live}
+          />
+        )}
+        {/* Hidden, not unmounted, while searching: its filter and folded folders survive. */}
+        <div className={searchOpen ? "hidden" : "h-full"}>
+          <FileTree
+            key={`${compareData.base.sha}..${compareData.head.sha}`}
+            files={compareData.files}
+            selectedPath={selected}
+            onSelect={(f) => setSelected(f.path)}
+          />
+        </div>
       </ResizablePanel>
       <ResizableHandle />
       <ResizablePanel defaultSize="72" minSize="30">
@@ -309,6 +364,8 @@ export function App() {
           onPrev={() => go(-1)}
           onNext={() => go(1)}
           reload={tick}
+          jump={jump}
+          highlight={searchOpen ? settledQuery : ""}
         />
       </ResizablePanel>
     </ResizablePanelGroup>
@@ -399,6 +456,22 @@ export function App() {
           </div>
 
           <div className="ml-auto flex items-center gap-1">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Toggle
+                    size="sm"
+                    variant="outline"
+                    pressed={searchOpen}
+                    onPressedChange={setSearchOpen}
+                    aria-label="Toggle search"
+                  >
+                    <SearchIcon className="size-4" />
+                  </Toggle>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>Search changed lines (⌘⇧F / Ctrl+Shift+F)</TooltipContent>
+            </Tooltip>
             <ToggleGroup
               type="single"
               size="sm"

@@ -8,6 +8,7 @@ import type {
   PullsResponse,
   RefsResponse,
   RepoInfo,
+  SearchResponse,
 } from "@/shared/api";
 
 export class ApiError extends Error {
@@ -39,6 +40,8 @@ export const api = {
     get<CompareResponse>("/api/compare", { base, head }, signal),
   file: (base: string, head: string, path: string, oldPath: string | null, signal: AbortSignal) =>
     get<FileDiffResponse>("/api/file", { base, head, path, oldPath }, signal),
+  search: (base: string, head: string, q: string, signal: AbortSignal) =>
+    get<SearchResponse>("/api/search", { base, head, q }, signal),
   pulls: (signal: AbortSignal) => get<PullsResponse>("/api/pulls", {}, signal),
   pull: (number: number, signal: AbortSignal) => get<PullResolved>("/api/pull", { number: String(number) }, signal),
 };

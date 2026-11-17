@@ -52,6 +52,7 @@ Then open the printed URL. It opens on `main` (or `master`, …) → **Working t
 | Navigate tree | ↑ ↓ to move, ← → to collapse/expand, Enter to toggle, Home/End |
 | Next / previous file | F7 / Shift+F7, or the arrows in the diff header |
 | Filter | Box above the tree (Esc to clear, ↓ to jump into the tree) |
+| Search changes | **⌘⇧F** / **Ctrl+Shift+F** or the 🔍 button: find text in the added and removed lines of the whole comparison. ↑ ↓ / Enter or click jump to the line, matches are highlighted in the diff, Esc clears then closes. See *Search* below |
 | Layout | Side-by-side or unified, line wrap, light/dark theme |
 
 The top row of the graph is the **working tree** (dashed dot, with the number of uncommitted files), drawn on top of HEAD: drag **B** onto it to include uncommitted work, or click it to see just the uncommitted changes against your branch.
@@ -63,6 +64,12 @@ A handle dropped on a branch tip picks the branch by name, not its commit id: th
 A comparison that names something movable (a branch, `HEAD`, the working tree or the index) re-reads itself every 2 seconds while the tab is visible, and right away when you come back to it, so edits and new commits from an editor or an agent show up on their own. The next read starts only after the previous one finished. Unchanged results don't re-render, so scroll position and expanded context stay put. ↻ next to the pickers reloads at once. Comparisons of fixed commit ids (a pull request, a clicked commit) never change and aren't polled.
 
 Comparison is a direct two-point diff (`git diff A B`), like IntelliJ's "Compare with…". In the URL the working tree is `:worktree` and the index `:index` (a ref name can't contain `:`), e.g. `?base=HEAD&head=:worktree`; these map to `git diff [--cached] [-R] <commit>`. Untracked files come from `git ls-files --others --exclude-standard` and show as added.
+
+### Search
+
+The search panel replaces the file tree and looks for a literal, case-insensitive substring (`50%_off`, `"quoted"`, `a OR b` all mean exactly that text) in the changed lines only, not in unchanged context. Untracked files count as added when one side is the working tree.
+
+On the first search of a comparison the server reads it as one `git diff -U0` and indexes every changed line into an **in-memory** SQLite FTS5 table with the trigram tokenizer, so any 3+ character substring is an index lookup (shorter queries scan). Nothing is written to disk. The last 3 comparisons stay indexed. Two commit ids are indexed once; a comparison involving the working tree or the index re-reads the diff on each search and rebuilds only if it changed. Above 200,000 changed lines, files that don't fit are left out of the search; this is decided from `git diff --numstat` before any patch text is read, and the panel says the search is partial. Lines are indexed up to 2,000 characters.
 
 ## GitHub pull requests
 
@@ -86,13 +93,14 @@ PR commits that aren't in your clone yet, such as those from forks, are fetched 
 ```
 src/index.ts             Bun.serve: CLI flags, SPA + /api/* → Effect handler
 src/server/HostGuard.ts  Host-header allow-list (loopback, own IPs, .local, MagicDNS)
-src/server/Git.ts        Git service (Effect): refs, compare, file diff (commits, index, working tree), -z parsers
+src/server/Git.ts        Git service (Effect): refs, compare, file diff, whole patch (commits, index, working tree), -z parsers
+src/server/DiffIndex.ts  Diff search: -U0 patch parser, in-memory SQLite FTS5 (trigram) index, LRU cache, DiffSearch service
 src/server/GitHub.ts     GitHub service: remote detection, PR list / resolve via `gh`
 src/server/Api.ts        HttpRouter routes, schema-validated query params
 src/shared/api.ts        Wire types shared by server and client
 src/lib/tree.ts          Changed files → compacted directory tree
 src/lib/graph.ts         Commit graph lane layout, A..B range
-src/components/          RefPicker, PullPicker, CommitGraph, FileTree, DiffPane
+src/components/          RefPicker, PullPicker, CommitGraph, FileTree, DiffSearch, DiffPane
 ```
 
 Tests: `bun test`

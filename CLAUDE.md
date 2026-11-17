@@ -111,6 +111,7 @@ For more information, read the Bun API docs in `node_modules/bun-types/docs/**.m
 - `/api/*` is guarded by `src/server/HostGuard.ts`: the `Host` header must be loopback, one of this machine's interface IPs, its names, or an `--allow-host` / `$ALLOWED_HOSTS` entry, on the bound port. `namesFor()` decides the names: spoofable ones (`.local`, single-label hostnames) only on a wildcard bind. A specific bind gets only the MagicDNS FQDN, and only if it's a Tailscale IP. This blocks DNS rebinding. Never loosen it to "any Host"; add names explicitly.
 - There is no auth: anyone who reaches the port can read the repo, including uncommitted and untracked (non-ignored) files. Keep loopback the default.
 - Working-tree reads (`:worktree` pseudo-revision, `src/server/Git.ts`) must stay gated on `git ls-files` listing the exact path, plus `isRepoPath` and the realpath check in `readDisk`. Never read an arbitrary request path from disk.
+- `/api/search` (`src/server/DiffIndex.ts`) takes only `base`, `head`, `q`, never a path; its text comes from `Git.patch`. The SQLite index is `:memory:` only: never give it a file path.
 - When testing a bind locally, use an unused port. Old `git-diff-view` binaries often sit on 127.0.0.1:3917/3918, and macOS lets a `0.0.0.0` listener share the port, so loopback-resolved names hit the old process.
 
 ## Commit flow

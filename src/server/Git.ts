@@ -19,6 +19,14 @@ import type {
   ResolvedRef,
 } from "@/shared/api";
 
+export interface PatchResponse {
+  readonly base: ResolvedRef;
+  readonly head: ResolvedRef;
+  readonly patch: string;
+  /** Some files were left out to stay under the line limit. */
+  readonly partial: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -48,6 +56,8 @@ const RECENT_COMMITS = 300;
 /** Untracked files listed in a working-tree comparison, at most. */
 const MAX_UNTRACKED = 2000;
 export const MAX_GRAPH_COMMITS = 5000;
+/** Paths named on one `git diff` command line when a search diff is cut down (argv size). */
+const MAX_PATHSPEC = 5000;
 
 /**
  * Every git invocation goes through this allow-list. The app is read-only by
@@ -111,6 +121,14 @@ export class Git extends Context.Service<
       path: string,
       oldPath: string | null,
     ): Effect.Effect<FileDiffResponse, InvalidRef | GitError>;
+    /**
+     * The whole comparison as one zero-context patch (`git diff -U0`), plus all-added
+     * (or all-deleted) patches for untracked files when one side is the working tree.
+     * Paths always carry `a/` / `b/` prefixes, whatever the user's diff config says.
+     * Stops at about `maxLines` changed lines, deciding from `--numstat` before reading
+     * any patch text, so a huge comparison is never buffered whole (`partial` is set).
+     */
+    patch(base: string, head: string, maxLines: number): Effect.Effect<PatchResponse, InvalidRef | GitError>;
     /** The URL configured for `remote` (after insteadOf rewriting), or null if there is no such remote. */
     remoteUrl(remote: string): Effect.Effect<string | null, GitError>;
     hasCommit(sha: string): Effect.Effect<boolean>;
@@ -358,6 +376,57 @@ export class Git extends Context.Service<
           return { base, head, files } satisfies CompareResponse;
         });
 
+        const patch = Effect.fn("Git.patch")(function* (baseRef: string, headRef: string, maxLines: number) {
+          const [base, head] = yield* Effect.all([resolve(baseRef), resolve(headRef)], { concurrency: 2 });
+          const range = diffRange(sideOf(base.sha), sideOf(head.sha));
+          const stats = parseNumstat(range === null ? "" : yield* git("diff", ...diffFlags, "--numstat", "-z", ...range));
+
+          // Over the limit: diff only the files that fit, named by pathspec (both sides of a rename).
+          let budget = maxLines;
+          let partial = false;
+          let pathspec: Array<string> | null = null;
+          const changed = (s: NumstatEntry) => s.additions + s.deletions;
+          if ([...stats.values()].reduce((n, s) => n + changed(s), 0) > maxLines) {
+            pathspec = [];
+            partial = true;
+            for (const [path, s] of stats) {
+              if (changed(s) === 0 || changed(s) > budget || pathspec.length >= MAX_PATHSPEC) continue;
+              budget -= changed(s);
+              pathspec.push(path, ...(s.oldPath ? [s.oldPath] : []));
+            }
+          } else {
+            budget -= [...stats.values()].reduce((n, s) => n + changed(s), 0);
+          }
+          const tracked =
+            range === null || pathspec?.length === 0
+              ? ""
+              : yield* git(
+                  "diff", ...diffFlags, "-U0", "--src-prefix=a/", "--dst-prefix=b/", ...range,
+                  ...(pathspec ? ["--", ...pathspec] : []),
+                );
+
+          let text = tracked;
+          if ((base.sha === WORKTREE) !== (head.sha === WORKTREE)) {
+            const kind = head.sha === WORKTREE ? "added" : "deleted";
+            // A path git already diffs (e.g. after `git rm --cached`) keeps git's version, as in `compare`.
+            const untracked = (yield* untrackedFiles).filter((p) => !stats.has(p)).slice(0, MAX_UNTRACKED);
+            const files = yield* Effect.forEach(untracked, (path) => Effect.map(readWorktreeFile(path), (file) => ({ path, file })), {
+              concurrency: 8,
+            });
+            for (const { path, file } of files) {
+              if (file.tooLarge || looksBinary(file.content)) continue;
+              const lines = lineCount(file.content);
+              if (lines > budget) {
+                partial = true;
+                continue;
+              }
+              budget -= lines;
+              text += untrackedPatch(path, file.content, file.mode, kind);
+            }
+          }
+          return { base, head, patch: text, partial } satisfies PatchResponse;
+        });
+
         // -------------------------------------------------------------------
         // single file
         // -------------------------------------------------------------------
@@ -526,7 +595,7 @@ export class Git extends Context.Service<
           );
         });
 
-        return Git.of({ info, refs, graph, resolve, compare, fileDiff, remoteUrl, hasCommit, mergeBase, fetchCommits });
+        return Git.of({ info, refs, graph, resolve, compare, fileDiff, patch, remoteUrl, hasCommit, mergeBase, fetchCommits });
       }),
     ).pipe(Layer.provide(BunServices.layer));
 }
@@ -575,17 +644,27 @@ export function parseNameStatus(out: string): Array<Omit<FileChange, "additions"
  * `added\tdeleted\t\0old\0new\0`. Binary files report `-\t-`.
  * Keyed by the head-side path.
  */
-export function parseNumstat(out: string): Map<string, { additions: number; deletions: number; binary: boolean }> {
+export interface NumstatEntry {
+  readonly additions: number;
+  readonly deletions: number;
+  readonly binary: boolean;
+  /** The base-side path of a rename or copy. */
+  readonly oldPath: string | null;
+}
+
+/** `git diff --numstat -z` keyed by head-side path, in git's order. */
+export function parseNumstat(out: string): Map<string, NumstatEntry> {
   const tokens = out.split("\0");
-  const result = new Map<string, { additions: number; deletions: number; binary: boolean }>();
+  const result = new Map<string, NumstatEntry>();
   let i = 0;
   while (i < tokens.length) {
     const record = tokens[i++];
     if (!record) continue;
     const [added = "", deleted = "", inlinePath = ""] = record.split("\t");
     let path = inlinePath;
+    let oldPath: string | null = null;
     if (path === "") {
-      i++; // skip old path
+      oldPath = tokens[i++] ?? null;
       path = tokens[i++] ?? "";
     }
     const binary = added === "-" && deleted === "-";
@@ -593,6 +672,7 @@ export function parseNumstat(out: string): Map<string, { additions: number; dele
       additions: binary ? 0 : Number(added) || 0,
       deletions: binary ? 0 : Number(deleted) || 0,
       binary,
+      oldPath,
     });
   }
   return result;

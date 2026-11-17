@@ -1,12 +1,13 @@
 import { DiffModeEnum, DiffView } from "@git-diff-view/react";
 import "@git-diff-view/react/styles/diff-view-pure.css";
+import { useEffect, useRef } from "react";
 import { ArrowRightIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon, FileWarningIcon, Loader2Icon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api, useHeldAsync } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { FileChange, FileDiffResponse } from "@/shared/api";
+import type { FileChange, FileDiffResponse, SearchHit } from "@/shared/api";
 import { STATUS_STYLE } from "./FileTree";
 
 interface DiffPaneProps {
@@ -21,15 +22,36 @@ interface DiffPaneProps {
   readonly onNext: () => void;
   /** Bumped to re-read the diff (a branch or the working tree changes under the same name). */
   readonly reload?: number;
+  /** Scroll to this line once its file is shown; a new object jumps again. */
+  readonly jump?: SearchHit | null;
+  /** Text to highlight wherever it appears in the diff (the active search). */
+  readonly highlight?: string;
 }
 
-export function DiffPane({ baseSha, headSha, file, mode, wrap, theme, position, onPrev, onNext, reload = 0 }: DiffPaneProps) {
+export function DiffPane({
+  baseSha,
+  headSha,
+  file,
+  mode,
+  wrap,
+  theme,
+  position,
+  onPrev,
+  onNext,
+  reload = 0,
+  jump = null,
+  highlight = "",
+}: DiffPaneProps) {
+  const bodyRef = useRef<HTMLDivElement>(null);
   // A reload of the same file keeps the old diff up until the new one arrives.
   const { state, data: shown } = useHeldAsync(
     `${baseSha}:${headSha}:${file?.oldPath}:${file?.path}`,
     file ? (signal) => api.file(baseSha, headSha, file.path, file.oldPath, signal) : null,
     [baseSha, headSha, file?.path, file?.oldPath, reload],
   );
+
+  useJumpToLine(bodyRef, jump, file?.path === jump?.path && !!shown);
+  useHighlight(bodyRef, highlight, !!file);
 
   if (!file) {
     return <Centered>Select a file in the tree to see its diff.</Centered>;
@@ -99,7 +121,7 @@ export function DiffPane({ baseSha, headSha, file, mode, wrap, theme, position, 
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div ref={bodyRef} className="min-h-0 flex-1 overflow-auto">
         {state.status !== "error" && !shown && (
           <Centered>
             <Loader2Icon className="size-4 animate-spin" /> Loading diff…
@@ -185,6 +207,98 @@ function DiffBody({
       />
     </>
   );
+}
+
+/**
+ * Scroll `jump`'s line into view once its file's diff is on screen. The diff view
+ * renders (and syntax-highlights) after mounting, so this retries for a moment.
+ * Split view tags each side's line numbers; unified view tags old and new numbers.
+ */
+function useJumpToLine(container: React.RefObject<HTMLDivElement | null>, jump: SearchHit | null, ready: boolean) {
+  const done = useRef<SearchHit | null>(null);
+  useEffect(() => {
+    if (!jump || !ready || done.current === jump) return;
+    const selector = `[data-side="${jump.side}"] [data-line-num="${jump.line}"], [data-line-${jump.side}-num="${jump.line}"]`;
+    let frame = 0;
+    let tries = 0;
+    const attempt = () => {
+      const row = container.current?.querySelector(selector)?.closest("tr");
+      if (row) {
+        done.current = jump;
+        row.scrollIntoView({ block: "center" });
+        row.classList.remove("diff-search-target");
+        void row.offsetWidth; // restart the flash animation
+        row.classList.add("diff-search-target");
+      } else if (++tries < 60) {
+        frame = requestAnimationFrame(attempt);
+      }
+    };
+    attempt();
+    return () => cancelAnimationFrame(frame);
+  }, [container, jump, ready]);
+}
+
+const HIGHLIGHT = "diff-search";
+const MAX_HIGHLIGHTS = 5000;
+
+/**
+ * Mark every occurrence of `query` in the diff's code cells with the CSS Custom
+ * Highlight API, which paints ranges without touching the diff view's DOM. It
+ * re-runs when the view re-renders (syntax highlighting, expanded context).
+ */
+function useHighlight(container: React.RefObject<HTMLDivElement | null>, query: string, mounted: boolean) {
+  useEffect(() => {
+    const root = container.current;
+    const registry = typeof CSS !== "undefined" ? CSS.highlights : undefined;
+    if (!root || !registry || typeof Highlight === "undefined") return;
+    if (!query) {
+      registry.delete(HIGHLIGHT);
+      return;
+    }
+    const q = query.toLowerCase();
+    const paint = () => {
+      const ranges: Array<Range> = [];
+      // Unified view: .diff-line-content; split view: .diff-line-old-content / .diff-line-new-content.
+      for (const cell of root.querySelectorAll(".diff-line-content, .diff-line-old-content, .diff-line-new-content")) {
+        const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+        // Matches can span syntax tokens, so search the cell's text and map offsets back to nodes.
+        const nodes: Array<{ node: Text; start: number }> = [];
+        let text = "";
+        for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+          nodes.push({ node: n as Text, start: text.length });
+          text += n.nodeValue ?? "";
+        }
+        const lower = text.toLowerCase();
+        const locate = (offset: number) => {
+          let i = nodes.length - 1;
+          while (i > 0 && nodes[i]!.start > offset) i--;
+          return { node: nodes[i]!.node, offset: offset - nodes[i]!.start };
+        };
+        for (let at = lower.indexOf(q); at !== -1; at = lower.indexOf(q, at + q.length)) {
+          const a = locate(at);
+          const b = locate(at + q.length - 1);
+          const range = new Range();
+          range.setStart(a.node, a.offset);
+          range.setEnd(b.node, b.offset + 1);
+          ranges.push(range);
+          if (ranges.length >= MAX_HIGHLIGHTS) break;
+        }
+        if (ranges.length >= MAX_HIGHLIGHTS) break;
+      }
+      registry.set(HIGHLIGHT, new Highlight(...ranges));
+    };
+    let frame = requestAnimationFrame(paint);
+    const observer = new MutationObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(paint);
+    });
+    observer.observe(root, { childList: true, subtree: true, characterData: true });
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+      registry.delete(HIGHLIGHT);
+    };
+  }, [container, query, mounted]);
 }
 
 function Centered({ children, tone }: { children: React.ReactNode; tone?: "error" }) {

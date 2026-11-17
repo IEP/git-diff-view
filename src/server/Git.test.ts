@@ -19,9 +19,9 @@ describe("parseNumstat", () => {
   test("keys renames by new path and flags binaries", () => {
     const out = "3\t1\tsrc/a.ts\0" + "1\t0\t\0docs/old.md\0docs/new.md\0" + "-\t-\tlogo.bin\0";
     const stats = parseNumstat(out);
-    expect(stats.get("src/a.ts")).toEqual({ additions: 3, deletions: 1, binary: false });
-    expect(stats.get("docs/new.md")).toEqual({ additions: 1, deletions: 0, binary: false });
-    expect(stats.get("logo.bin")).toEqual({ additions: 0, deletions: 0, binary: true });
+    expect(stats.get("src/a.ts")).toEqual({ additions: 3, deletions: 1, binary: false, oldPath: null });
+    expect(stats.get("docs/new.md")).toEqual({ additions: 1, deletions: 0, binary: false, oldPath: "docs/old.md" });
+    expect(stats.get("logo.bin")).toEqual({ additions: 0, deletions: 0, binary: true, oldPath: null });
   });
 });
 

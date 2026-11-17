@@ -15,3 +15,24 @@
     @apply m-0 min-w-[320px] overflow-hidden bg-background text-foreground antialiased;
   }
 }
+
+/* Search hits inside the diff (CSS Custom Highlight API: no DOM changes to the diff view). */
+::highlight(diff-search) {
+  background-color: rgb(250 204 21 / 0.45);
+  color: inherit;
+}
+
+/* The line a search result jumped to. */
+@keyframes diff-search-flash {
+  from {
+    outline-color: rgb(250 204 21);
+  }
+  to {
+    outline-color: transparent;
+  }
+}
+.diff-search-target {
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+  animation: diff-search-flash 1.6s ease-out;
+}
