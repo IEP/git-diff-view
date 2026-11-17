@@ -1,5 +1,15 @@
 import { useState } from "react";
-import { CheckIcon, ChevronsUpDownIcon, CloudIcon, GitBranchIcon, GitCommitHorizontalIcon, TagIcon, TextCursorInputIcon } from "lucide-react";
+import {
+  CheckIcon,
+  ChevronsUpDownIcon,
+  CloudIcon,
+  FilePenLineIcon,
+  GitBranchIcon,
+  GitCommitHorizontalIcon,
+  ListChecksIcon,
+  TagIcon,
+  TextCursorInputIcon,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Command,
@@ -11,7 +21,7 @@ import {
 } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
-import type { RefsResponse } from "@/shared/api";
+import { INDEX, isPseudoRev, PSEUDO_LABEL, WORKTREE, type RefsResponse } from "@/shared/api";
 
 interface RefPickerProps {
   readonly label: string;
@@ -24,7 +34,14 @@ interface RefPickerProps {
 
 const MAX_COMMITS_SHOWN = 100;
 
+const LOCAL_CHANGES = [
+  { rev: WORKTREE, icon: FilePenLineIcon, hint: "Files on disk: staged, unstaged and untracked" },
+  { rev: INDEX, icon: ListChecksIcon, hint: "What the next commit would contain" },
+] as const;
+
 function iconFor(value: string, refs: RefsResponse | null) {
+  if (value === WORKTREE) return FilePenLineIcon;
+  if (value === INDEX) return ListChecksIcon;
   if (!refs) return GitBranchIcon;
   if (refs.branches.some((b) => b.name === value)) return GitBranchIcon;
   if (refs.remoteBranches.some((b) => b.name === value)) return CloudIcon;
@@ -80,10 +97,10 @@ export function RefPicker({ label, value, refs, resolvedSha, onChange }: RefPick
           <span className="flex min-w-0 items-center gap-2">
             <span className="text-muted-foreground text-[10px] uppercase tracking-wide">{label}</span>
             <Icon className="size-3.5 shrink-0 opacity-70" />
-            <span className="truncate font-medium">{value || "Select…"}</span>
+            <span className="truncate font-medium">{isPseudoRev(value) ? PSEUDO_LABEL[value] : value || "Select…"}</span>
           </span>
           <span className="flex shrink-0 items-center gap-1.5">
-            {resolvedSha && <code className="text-muted-foreground text-[10px]">{resolvedSha.slice(0, 7)}</code>}
+            {resolvedSha && !isPseudoRev(resolvedSha) && <code className="text-muted-foreground text-[10px]">{resolvedSha.slice(0, 7)}</code>}
             <ChevronsUpDownIcon className="size-3.5 opacity-50" />
           </span>
         </Button>
@@ -105,6 +122,16 @@ export function RefPicker({ label, value, refs, resolvedSha, onChange }: RefPick
                 </CommandItem>
               </CommandGroup>
             )}
+            <CommandGroup heading="Local changes">
+              {LOCAL_CHANGES.map(({ rev, icon: ItemIcon, hint }) => (
+                <CommandItem key={rev} value={`local ${PSEUDO_LABEL[rev]} uncommitted`} onSelect={() => pick(rev)}>
+                  <ItemIcon />
+                  <span className="truncate">{PSEUDO_LABEL[rev]}</span>
+                  <span className="text-muted-foreground ml-auto truncate pl-2 text-xs">{hint}</span>
+                  <CheckIcon className={cn("shrink-0", value === rev ? "opacity-100" : "opacity-0")} />
+                </CommandItem>
+              ))}
+            </CommandGroup>
             {refs && refs.branches.length > 0 && (
               <CommandGroup heading="Local branches">
                 {refs.branches.map((b) => (

@@ -25,7 +25,7 @@ import {
 import type { AsyncState } from "@/lib/api";
 import { commitsInRange, layoutGraph, type GraphRow, type GraphSegment } from "@/lib/graph";
 import { cn } from "@/lib/utils";
-import type { GraphCommit, GraphRef, GraphResponse } from "@/shared/api";
+import { isPseudoRev, PSEUDO_LABEL, type GraphCommit, type GraphRef, type GraphResponse } from "@/shared/api";
 
 const ROW_H = 26;
 const LANE_W = 14;
@@ -172,7 +172,8 @@ export function CommitGraph({ graph, baseSha, headSha, onCompare, onLoadMore, on
     listRef.current?.querySelector(`[data-index="${i}"]`)?.scrollIntoView({ block: "center" });
   }, [indexOf, headSha]);
 
-  const shortOf = (sha: string) => rows[indexOf.get(sha) ?? -1]?.commit.shortSha ?? sha.slice(0, 7);
+  const shortOf = (sha: string) =>
+    isPseudoRev(sha) ? PSEUDO_LABEL[sha] : (rows[indexOf.get(sha) ?? -1]?.commit.shortSha ?? sha.slice(0, 7));
 
   /** One commit against its first parent, like `git show`. */
   const show = (c: GraphCommit) => {
@@ -191,7 +192,9 @@ export function CommitGraph({ graph, baseSha, headSha, onCompare, onLoadMore, on
     const other = anchor ?? headSha;
     if (!other || other === c.sha) return show(c);
     setNotice(null);
-    const [base, head] = (indexOf.get(other) ?? Infinity) > (indexOf.get(c.sha) ?? 0) ? [other, c.sha] : [c.sha, other];
+    // Uncommitted state is newer than any commit, so it always stays the head.
+    const otherIndex = isPseudoRev(other) ? -1 : (indexOf.get(other) ?? Infinity);
+    const [base, head] = otherIndex > (indexOf.get(c.sha) ?? 0) ? [other, c.sha] : [c.sha, other];
     onCompare(base, head);
   };
 

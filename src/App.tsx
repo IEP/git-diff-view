@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeftRightIcon,
   Columns2Icon,
@@ -7,6 +7,7 @@ import {
   GitGraphIcon,
   Loader2Icon,
   MoonIcon,
+  RefreshCwIcon,
   RowsIcon,
   SunIcon,
   WrapTextIcon,
@@ -24,7 +25,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { api, useAsync } from "@/lib/api";
 import { buildTree, filesInTreeOrder } from "@/lib/tree";
-import type { RefsResponse, RepoInfo } from "@/shared/api";
+import { isPseudoRev, type CompareResponse, type RefsResponse, type RepoInfo } from "@/shared/api";
 import "./index.css";
 
 // ---------------------------------------------------------------------------
@@ -153,8 +154,19 @@ export function App() {
     // `pr` is a dependency so leaving PR mode (e.g. after a failed load) fills any still-empty side.
   }, [repoData, refsData, pr]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const compare = useAsync(base && head ? (s) => api.compare(base, head, s) : null, [base, head]);
-  const compareData = compare.status === "success" ? compare.data : null;
+  // Uncommitted state changes under the same name, so it can be re-read on demand.
+  const live = isPseudoRev(base) || isPseudoRev(head);
+  const [reload, setReload] = useState(0);
+  // Each result carries the pair it was fetched for: right after a pick, `compare` still holds the old one.
+  const pairKey = `${base}..${head}`;
+  const compare = useAsync(
+    base && head ? (s) => api.compare(base, head, s).then((data) => ({ key: pairKey, data })) : null,
+    [base, head, reload],
+  );
+  // While re-reading the same pair, keep the last result on screen instead of a spinner.
+  const lastCompare = useRef<{ key: string; data: CompareResponse } | null>(null);
+  if (compare.status === "success") lastCompare.current = compare.data;
+  const compareData = compare.status !== "error" && lastCompare.current?.key === pairKey ? lastCompare.current.data : null;
 
   // Commit graph. "Load more" raises the limit; the graph keeps the old page on screen meanwhile.
   const [graphLimit, setGraphLimit] = useState(GRAPH_PAGE);
@@ -193,6 +205,14 @@ export function App() {
     },
     [ordered, selectedIndex],
   );
+
+  // Coming back from the editor: re-read the working tree / index.
+  useEffect(() => {
+    if (!live) return;
+    const onFocus = () => setReload((n) => n + 1);
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [live]);
 
   // IntelliJ's F7 / Shift+F7 for next / previous change.
   useEffect(() => {
@@ -244,6 +264,7 @@ export function App() {
           position={{ index: selectedIndex, total: ordered.length }}
           onPrev={() => go(-1)}
           onNext={() => go(1)}
+          reload={reload}
         />
       </ResizablePanel>
     </ResizablePanelGroup>
@@ -314,7 +335,23 @@ export function App() {
               resolvedSha={compareData?.head.sha}
               onChange={chooseHead}
             />
-            {compare.status === "loading" && <Loader2Icon className="text-muted-foreground size-4 animate-spin" />}
+            {live && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-8"
+                    aria-label="Reload uncommitted changes"
+                    onClick={() => setReload((n) => n + 1)}
+                  >
+                    <RefreshCwIcon className={compare.status === "loading" ? "size-4 animate-spin" : "size-4"} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Reload uncommitted changes (also on returning to this tab)</TooltipContent>
+              </Tooltip>
+            )}
+            {compare.status === "loading" && !live && <Loader2Icon className="text-muted-foreground size-4 animate-spin" />}
           </div>
 
           <div className="ml-auto flex items-center gap-1">

@@ -3,6 +3,16 @@
  * Plain types only: this file is imported by the browser bundle too.
  */
 
+/**
+ * Pseudo-revisions for uncommitted state. A ref name can never contain ":", so
+ * these can't collide with a branch or tag. They travel in place of a SHA.
+ */
+export const WORKTREE = ":worktree";
+export const INDEX = ":index";
+export type PseudoRev = typeof WORKTREE | typeof INDEX;
+export const isPseudoRev = (rev: string | null | undefined): rev is PseudoRev => rev === WORKTREE || rev === INDEX;
+export const PSEUDO_LABEL: Record<PseudoRev, string> = { [WORKTREE]: "Working tree", [INDEX]: "Staged (index)" };
+
 export type ChangeStatus = "added" | "modified" | "deleted" | "renamed" | "copied" | "typechange" | "unknown";
 
 export interface RepoInfo {
@@ -36,6 +46,7 @@ export interface RefsResponse {
 
 export interface ResolvedRef {
   readonly ref: string;
+  /** Full commit id, or `WORKTREE` / `INDEX` for uncommitted state. */
   readonly sha: string;
 }
 

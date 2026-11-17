@@ -4,6 +4,7 @@ import { ArrowRightIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon, FileWarningIc
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useRef } from "react";
 import { api, useAsync } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { FileChange, FileDiffResponse } from "@/shared/api";
@@ -19,13 +20,21 @@ interface DiffPaneProps {
   readonly position: { readonly index: number; readonly total: number };
   readonly onPrev: () => void;
   readonly onNext: () => void;
+  /** Bumped to re-read the diff (uncommitted state changes without its "SHA" changing). */
+  readonly reload?: number;
 }
 
-export function DiffPane({ baseSha, headSha, file, mode, wrap, theme, position, onPrev, onNext }: DiffPaneProps) {
+export function DiffPane({ baseSha, headSha, file, mode, wrap, theme, position, onPrev, onNext, reload = 0 }: DiffPaneProps) {
+  // Each result carries the key it was fetched for: right after a change, `state` still holds the old one.
+  const key = `${baseSha}:${headSha}:${file?.oldPath}:${file?.path}`;
   const state = useAsync(
-    file ? (signal) => api.file(baseSha, headSha, file.path, file.oldPath, signal) : null,
-    [baseSha, headSha, file?.path, file?.oldPath],
+    file ? (signal) => api.file(baseSha, headSha, file.path, file.oldPath, signal).then((data) => ({ key, data })) : null,
+    [baseSha, headSha, file?.path, file?.oldPath, reload],
   );
+  // A reload of the same file keeps the old diff up until the new one arrives.
+  const last = useRef<{ key: string; data: FileDiffResponse } | null>(null);
+  if (state.status === "success") last.current = state.data;
+  const shown = last.current?.key === key ? last.current.data : null;
 
   if (!file) {
     return <Centered>Select a file in the tree to see its diff.</Centered>;
@@ -96,14 +105,14 @@ export function DiffPane({ baseSha, headSha, file, mode, wrap, theme, position, 
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
-        {state.status === "loading" && (
+        {state.status !== "error" && !shown && (
           <Centered>
             <Loader2Icon className="size-4 animate-spin" /> Loading diff…
           </Centered>
         )}
         {state.status === "error" && <Centered tone="error">{state.error.message}</Centered>}
-        {state.status === "success" && (
-          <DiffBody key={`${baseSha}:${headSha}:${file.path}`} file={file} diff={state.data} mode={mode} wrap={wrap} theme={theme} />
+        {shown && (
+          <DiffBody key={`${baseSha}:${headSha}:${file.path}`} file={file} diff={shown} mode={mode} wrap={wrap} theme={theme} />
         )}
       </div>
     </div>
@@ -132,6 +141,13 @@ function DiffBody({
   }
 
   const hasHunks = diff.patch.includes("\n@@ ");
+  if (!hasHunks && diff.tooLarge) {
+    return (
+      <Centered>
+        <FileWarningIcon className="size-4" /> File too large to show.
+      </Centered>
+    );
+  }
   if (!hasHunks) {
     const reason =
       file.status === "renamed"
@@ -146,7 +162,8 @@ function DiffBody({
 
   // Ship full contents when we have them: that enables "expand context" and
   // accurate syntax highlighting. For very large files we fall back to hunks only.
-  const withContent = !diff.tooLarge;
+  // No content on either side (too large, or the server withheld it): render the hunks alone.
+  const withContent = !diff.tooLarge && (diff.oldContent !== null || diff.newContent !== null);
   // A new (or deleted) file has only one side, so split view would leave half
   // the pane empty. Show it as a single full-width column instead.
   const oneSided = file.status === "added" || file.status === "deleted";

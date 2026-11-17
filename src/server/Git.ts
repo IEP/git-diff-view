@@ -1,7 +1,9 @@
 import { Context, Effect, Layer, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { BunServices } from "@effect/platform-bun";
-import { basename } from "node:path";
+import { lstat, readlink, realpath } from "node:fs/promises";
+import { basename, dirname, join, sep } from "node:path";
+import { INDEX, isPseudoRev, WORKTREE } from "@/shared/api";
 import type {
   ChangeStatus,
   CommitEntry,
@@ -43,6 +45,8 @@ export class NotARepository extends Schema.TaggedError<NotARepository>()("NotARe
 /** Files larger than this are not shipped to the browser in full. */
 const MAX_BLOB_BYTES = 2 * 1024 * 1024;
 const RECENT_COMMITS = 300;
+/** Untracked files listed in a working-tree comparison, at most. */
+const MAX_UNTRACKED = 2000;
 export const MAX_GRAPH_COMMITS = 5000;
 
 /**
@@ -63,6 +67,7 @@ const READ_ONLY_SUBCOMMANDS = new Set([
   "cat-file",
   "merge-base",
   "ls-remote",
+  "ls-files",
 ]);
 
 /** A full object id (SHA-1 or SHA-256). Anything from outside must match before git sees it. */
@@ -267,6 +272,7 @@ export class Git extends Context.Service<
           if (trimmed === "" || trimmed.length > 256 || trimmed.startsWith("-") || /[\s\x00-\x1f\x7f]/.test(trimmed)) {
             return yield* new InvalidRef({ ref, message: `Invalid revision: "${ref}"` });
           }
+          if (isPseudoRev(trimmed)) return { ref: trimmed, sha: trimmed } satisfies ResolvedRef;
           const sha = yield* git("rev-parse", "--verify", "--end-of-options", `${trimmed}^{commit}`).pipe(
             Effect.map((s) => s.trim()),
             Effect.mapError(() => new InvalidRef({ ref, message: `Unknown revision: "${ref}"` })),
@@ -280,15 +286,24 @@ export class Git extends Context.Service<
 
         const diffFlags = ["--no-color", "--no-ext-diff", "--no-textconv", "-M"] as const;
 
+        /** Untracked, non-ignored files (not directories such as nested repositories). */
+        const untrackedFiles = git("ls-files", "-z", "--others", "--exclude-standard").pipe(
+          Effect.map((out) => out.split("\0").filter((p) => p !== "" && !p.endsWith("/"))),
+        );
+
         const compare = Effect.fn("Git.compare")(function* (baseRef: string, headRef: string) {
           const [base, head] = yield* Effect.all([resolve(baseRef), resolve(headRef)], { concurrency: 2 });
-          const [nameStatus, numstat] = yield* Effect.all(
-            [
-              git("diff", ...diffFlags, "--name-status", "-z", base.sha, head.sha),
-              git("diff", ...diffFlags, "--numstat", "-z", base.sha, head.sha),
-            ],
-            { concurrency: 2 },
-          );
+          const range = diffRange(sideOf(base.sha), sideOf(head.sha));
+          const [nameStatus, numstat] =
+            range === null
+              ? ["", ""]
+              : yield* Effect.all(
+                  [
+                    git("diff", ...diffFlags, "--name-status", "-z", ...range),
+                    git("diff", ...diffFlags, "--numstat", "-z", ...range),
+                  ],
+                  { concurrency: 2 },
+                );
           const stats = parseNumstat(numstat);
           const files = parseNameStatus(nameStatus).map((f): FileChange => {
             const s = stats.get(f.path);
@@ -299,6 +314,35 @@ export class Git extends Context.Service<
               binary: s?.binary ?? false,
             };
           });
+
+          // `git diff` never reports untracked files: they exist only on the working-tree side.
+          if ((base.sha === WORKTREE) !== (head.sha === WORKTREE)) {
+            const status = head.sha === WORKTREE ? "added" : "deleted";
+            const seen = new Set(files.map((f) => f.path));
+            const untracked = (yield* untrackedFiles).filter((p) => !seen.has(p)).slice(0, MAX_UNTRACKED);
+            const extra = yield* Effect.forEach(
+              untracked,
+              (path) =>
+                readWorktreeFile(path).pipe(
+                  Effect.map((file): FileChange => {
+                    const binary = looksBinary(file.content);
+                    const lines = binary ? 0 : lineCount(file.content);
+                    return {
+                      status,
+                      path,
+                      oldPath: null,
+                      similarity: null,
+                      additions: status === "added" ? lines : 0,
+                      deletions: status === "deleted" ? lines : 0,
+                      binary,
+                    };
+                  }),
+                ),
+              { concurrency: 8 },
+            );
+            files.push(...extra);
+          }
+
           files.sort((a, b) => a.path.localeCompare(b.path));
           return { base, head, files } satisfies CompareResponse;
         });
@@ -312,13 +356,48 @@ export class Git extends Context.Service<
           // `ls-tree -l` tells us existence, object type and size in one call.
           const entry = yield* git("ls-tree", "-z", "-l", "--full-tree", sha, "--", path);
           const record = entry.split("\0").find((r) => r.length > 0);
-          if (!record) return { content: null, tooLarge: false } as const;
+          if (!record) return NO_BLOB;
           const tab = record.indexOf("\t");
           const [, type, objectId, size] = record.slice(0, tab).split(/\s+/);
-          if (type !== "blob" || !objectId) return { content: null, tooLarge: false } as const;
+          if (type !== "blob" || !objectId) return NO_BLOB;
           if (Number(size) > MAX_BLOB_BYTES) return { content: null, tooLarge: true } as const;
           const content = yield* git("cat-file", "blob", objectId);
           return { content, tooLarge: false } as const;
+        });
+
+        /** The stage-0 index entry for `path` (none while it has merge conflicts). */
+        const readIndexBlob = Effect.fnUntraced(function* (path: string) {
+          const out = yield* git("ls-files", "-z", "--stage", "--", path);
+          const record = out.split("\0").find((r) => r.endsWith(`\t${path}`) && r.split("\t")[0]!.endsWith(" 0"));
+          if (!record) return NO_BLOB;
+          const [mode, objectId] = record.split("\t")[0]!.split(" ");
+          if (mode === "160000" || !objectId) return NO_BLOB; // submodule
+          const size = Number((yield* git("cat-file", "-s", objectId)).trim());
+          if (size > MAX_BLOB_BYTES) return { content: null, tooLarge: true } as const;
+          return { content: yield* git("cat-file", "blob", objectId), tooLarge: false } as const;
+        });
+
+        const rootReal = yield* Effect.promise(() => realpath(root));
+
+        /**
+         * Read `path` from the working tree as git would see it. Callers make sure
+         * git lists the path; this also refuses anything reached through a
+         * symlinked directory, and never follows a symlink itself.
+         */
+        const readWorktreeFile = (path: string) =>
+          Effect.promise(() => readDisk(rootReal, path));
+
+        /** Only paths git tracks or would offer to add: never `.git/*`, ignored files or `..`. */
+        const isListed = (path: string, ...which: ReadonlyArray<string>) =>
+          git("ls-files", "-z", ...which, "--", path).pipe(Effect.map((out) => out.split("\0").includes(path)));
+
+        const readSide = Effect.fnUntraced(function* (rev: string, path: string) {
+          if (rev === INDEX) return yield* readIndexBlob(path);
+          if (rev === WORKTREE) {
+            if (!(yield* isListed(path, "--cached", "--others", "--exclude-standard"))) return NO_BLOB;
+            return yield* readWorktreeFile(path);
+          }
+          return yield* readBlob(rev, path);
         });
 
         const fileDiff = Effect.fn("Git.fileDiff")(function* (
@@ -327,25 +406,53 @@ export class Git extends Context.Service<
           path: string,
           oldPath: string | null,
         ) {
+          for (const p of [path, oldPath]) {
+            if (p !== null && !isRepoPath(p)) return yield* new InvalidRef({ ref: p, message: `Invalid path: "${p}"` });
+          }
           const [base, head] = yield* Effect.all([resolve(baseRef), resolve(headRef)], { concurrency: 2 });
           const before = oldPath ?? path;
           const pathspec = before === path ? [path] : [before, path];
 
-          const [patch, oldBlob, newBlob] = yield* Effect.all(
-            [
-              git("diff", ...diffFlags, "--full-index", base.sha, head.sha, "--", ...pathspec),
-              readBlob(base.sha, before),
-              readBlob(head.sha, path),
-            ],
-            { concurrency: 3 },
-          );
+          const range = diffRange(sideOf(base.sha), sideOf(head.sha));
+          const gitPatch =
+            range === null ? "" : yield* git("diff", ...diffFlags, "--full-index", ...range, "--", ...pathspec);
+
+          // An untracked file has no diff from git: build the all-added (or all-deleted) patch here.
+          // (After `git rm --cached` git does report it, as deleted; keep that, like the file list.)
+          if (
+            gitPatch === "" &&
+            (base.sha === WORKTREE) !== (head.sha === WORKTREE) &&
+            oldPath === null &&
+            (yield* isListed(path, "--others", "--exclude-standard"))
+          ) {
+            const file = yield* readWorktreeFile(path);
+            const added = head.sha === WORKTREE;
+            const binary = looksBinary(file.content);
+            const content = binary || file.tooLarge ? null : file.content;
+            return {
+              patch: untrackedPatch(path, file.content, file.mode, added ? "added" : "deleted"),
+              oldContent: added ? null : content,
+              newContent: added ? content : null,
+              binary,
+              tooLarge: file.tooLarge,
+            } satisfies FileDiffResponse;
+          }
+
+          const patch = gitPatch;
+          const [oldBlob, newBlob] = yield* Effect.all([readSide(base.sha, before), readSide(head.sha, path)], {
+            concurrency: 2,
+          });
 
           const binary =
             /^Binary files .* differ$/m.test(patch) ||
             looksBinary(oldBlob.content) ||
             looksBinary(newBlob.content);
+          // With autocrlf / eol attributes / clean filters, git diffs the cleaned text while the
+          // file on disk differs; the full contents would then disagree with the hunks.
+          const filtered = [base.sha, head.sha].includes(WORKTREE) && !patch.includes("\r") &&
+            [oldBlob.content, newBlob.content].some((c) => c?.includes("\r\n"));
           const tooLarge = oldBlob.tooLarge || newBlob.tooLarge;
-          const shipContent = !binary && !tooLarge;
+          const shipContent = !binary && !tooLarge && !filtered;
 
           return {
             patch,
@@ -533,4 +640,97 @@ export function parseDecorations(decorations: string): Array<GraphRef> {
 /** Same heuristic git uses: a NUL byte in the first 8000 bytes means binary. */
 function looksBinary(content: string | null): boolean {
   return content !== null && content.slice(0, 8000).includes("\0");
+}
+
+function lineCount(content: string | null): number {
+  if (!content) return 0;
+  const n = content.split("\n").length;
+  return content.endsWith("\n") ? n - 1 : n;
+}
+
+const NO_BLOB = { content: null, tooLarge: false } as const;
+
+// ---------------------------------------------------------------------------
+// Uncommitted state
+// ---------------------------------------------------------------------------
+
+/** One end of a comparison: a commit, the index, or the working tree. */
+export type Side = { readonly kind: "commit"; readonly sha: string } | { readonly kind: "index" } | { readonly kind: "worktree" };
+
+export const sideOf = (rev: string): Side =>
+  rev === WORKTREE ? { kind: "worktree" } : rev === INDEX ? { kind: "index" } : { kind: "commit", sha: rev };
+
+const LEVEL = { commit: 0, index: 1, worktree: 2 } as const;
+
+/**
+ * The revision arguments for `git diff` that compare `base` → `head`, or null
+ * when both are the same uncommitted state (nothing to compare). git can only
+ * diff "older" → "newer" (commit → index → working tree), so a swapped pair
+ * uses `-R`.
+ */
+export function diffRange(base: Side, head: Side): ReadonlyArray<string> | null {
+  if (base.kind === "commit" && head.kind === "commit") return [base.sha, head.sha];
+  if (base.kind === head.kind) return null;
+  const reversed = LEVEL[base.kind] > LEVEL[head.kind];
+  const [lo, hi] = reversed ? [head, base] : [base, head];
+  const flags = reversed ? ["-R"] : [];
+  if (lo.kind === "commit") return hi.kind === "index" ? [...flags, "--cached", lo.sha] : [...flags, lo.sha];
+  return flags; // index → working tree: plain `git diff`
+}
+
+/** A normalized path relative to the repository root, as git prints it: no `..`, `.`, empty or absolute parts. */
+export const isRepoPath = (path: string): boolean =>
+  path !== "" &&
+  path.length <= 4096 &&
+  !path.startsWith("/") &&
+  !/[\x00]/.test(path) &&
+  path.split("/").every((s) => s !== "" && s !== "." && s !== "..");
+
+export interface DiskFile {
+  readonly content: string | null;
+  readonly tooLarge: boolean;
+  /** Git file mode: 100644, 100755 or 120000 (symlink). */
+  readonly mode: string;
+}
+
+/**
+ * Read `root/path` the way git stores it: a symlink yields its target text and
+ * is never followed. Anything whose parent directory resolves outside `root`
+ * (a symlinked directory), or that isn't a regular file, reads as missing.
+ */
+export async function readDisk(root: string, path: string): Promise<DiskFile> {
+  const missing: DiskFile = { content: null, tooLarge: false, mode: "100644" };
+  if (!isRepoPath(path)) return missing;
+  const abs = join(root, path);
+  try {
+    const parent = await realpath(dirname(abs));
+    if (parent !== root && !parent.startsWith(root + sep)) return missing;
+    const st = await lstat(abs);
+    if (st.isSymbolicLink()) return { content: await readlink(abs), tooLarge: false, mode: "120000" };
+    if (!st.isFile()) return missing;
+    const mode = st.mode & 0o100 ? "100755" : "100644";
+    if (st.size > MAX_BLOB_BYTES) return { content: null, tooLarge: true, mode };
+    return { content: await Bun.file(abs).text(), tooLarge: false, mode };
+  } catch {
+    return missing;
+  }
+}
+
+/** A unified diff adding (or deleting) a whole file, as `git diff` would print it for a new file. */
+export function untrackedPatch(path: string, content: string | null, mode: string, kind: "added" | "deleted"): string {
+  const added = kind === "added";
+  let patch = `diff --git a/${path} b/${path}\n${added ? "new" : "deleted"} file mode ${mode}\n`;
+  if (content === null || content === "") return patch;
+  if (looksBinary(content)) {
+    return patch + (added ? `Binary files /dev/null and b/${path} differ\n` : `Binary files a/${path} and /dev/null differ\n`);
+  }
+  const lines = content.split("\n");
+  const endsWithNewline = content.endsWith("\n");
+  if (endsWithNewline) lines.pop();
+  const span = lines.length === 1 ? "1" : `1,${lines.length}`;
+  patch += added ? `--- /dev/null\n+++ b/${path}\n@@ -0,0 +${span} @@\n` : `--- a/${path}\n+++ /dev/null\n@@ -${span} +0,0 @@\n`;
+  const sign = added ? "+" : "-";
+  patch += lines.map((l) => sign + l).join("\n") + "\n";
+  if (!endsWithNewline) patch += "\\ No newline at end of file\n";
+  return patch;
 }
