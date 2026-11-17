@@ -3,7 +3,15 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import index from "./index.html";
 import { makeApiHandler } from "./server/Api";
-import { interfaceAddresses, isShareableAddress, isWildcard, machineNames, makeHostGuard, normalizeHost } from "./server/HostGuard";
+import {
+  interfaceAddresses,
+  isShareableAddress,
+  isWildcard,
+  machineIdentity,
+  makeHostGuard,
+  namesFor,
+  normalizeHost,
+} from "./server/HostGuard";
 
 const USAGE = `Usage: git-diff-view [repo] [--lan | --host <addr>] [--port <n>] [--allow-host <name>]...
 
@@ -56,7 +64,7 @@ const extraHosts = [...(process.env.ALLOWED_HOSTS?.split(",") ?? []), ...(opts["
   .filter(Boolean);
 const exposed = hostname !== "127.0.0.1" && hostname !== "localhost" && hostname !== "::1";
 
-const names = exposed ? machineNames() : [];
+const names = exposed ? namesFor(hostname, machineIdentity()) : [];
 const guard = makeHostGuard({ bindHost: hostname, port, extraHosts, names });
 
 const server = serve({
@@ -86,7 +94,7 @@ if (!exposed) {
     isWildcard(hostname) ? hostname === "::" || !addr.includes(":") : normalizeHost(addr) === bound;
   const urls = [
     ...interfaceAddresses().filter((a) => isShareableAddress(a) && reachable(a)).map(normalizeHost),
-    ...(isWildcard(hostname) ? [...names, ...extraHosts].map(normalizeHost) : []),
+    ...[...names, ...extraHosts].map(normalizeHost),
   ];
   console.log(`🚀 Listening on ${hostname}:${port}. Open one of:`);
   for (const h of new Set(urls)) if (h) console.log(`   http://${h}:${port}/`);

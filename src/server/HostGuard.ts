@@ -25,33 +25,74 @@ export const interfaceAddresses = (): string[] =>
     .flat()
     .flatMap((i) => (i ? [i.address] : []));
 
-/** Best effort: this machine's MagicDNS name, e.g. `laptop.tailnet-name.ts.net`. */
-export const tailscaleNames = (): string[] => {
+export interface TailscaleSelf {
+  /** MagicDNS FQDN, e.g. `laptop.tailnet-name.ts.net.` */
+  readonly dnsName?: string;
+  /** Short machine name, resolved through the OS search domain (spoofable off-tailnet). */
+  readonly hostName?: string;
+  readonly ips: readonly string[];
+}
+
+/** Best effort: this machine's Tailscale identity from `tailscale status --json`. */
+export const tailscaleSelf = (): TailscaleSelf | null => {
   const bin = Bun.which("tailscale");
-  if (!bin) return [];
+  if (!bin) return null;
   try {
     const out = Bun.spawnSync([bin, "status", "--json"], { stderr: "ignore", timeout: 2000 });
-    if (out.exitCode !== 0) return [];
+    if (out.exitCode !== 0) return null;
     const self = JSON.parse(out.stdout.toString()).Self ?? {};
-    return [self.DNSName, self.HostName].filter((n): n is string => typeof n === "string" && n !== "");
+    const str = (v: unknown) => (typeof v === "string" && v !== "" ? v : undefined);
+    return {
+      dnsName: str(self.DNSName),
+      hostName: str(self.HostName),
+      ips: Array.isArray(self.TailscaleIPs) ? self.TailscaleIPs.filter((ip: unknown) => typeof ip === "string") : [],
+    };
   } catch {
-    return [];
+    return null;
   }
 };
 
 /** macOS Bonjour name (`scutil --get LocalHostName`), which `os.hostname()` may not reflect. */
-const bonjourName = (): string[] => {
-  if (process.platform !== "darwin") return [];
+const bonjourName = (): string | undefined => {
+  if (process.platform !== "darwin") return undefined;
   const out = Bun.spawnSync(["scutil", "--get", "LocalHostName"], { stderr: "ignore", timeout: 1000 });
   const name = out.exitCode === 0 ? out.stdout.toString().trim() : "";
-  return name ? [`${name}.local`] : [];
+  return name ? `${name}.local` : undefined;
 };
 
-/** Names this machine answers to: hostname, mDNS `.local`, Tailscale MagicDNS. */
-export const machineNames = (): string[] => {
-  const h = osHostname();
-  const own = isIP(h) ? [] : [h, h.split(".")[0]!, `${h.split(".")[0]}.local`];
-  return [...new Set([...own, ...bonjourName(), ...tailscaleNames()])];
+export interface MachineIdentity {
+  readonly hostname: string;
+  readonly bonjour?: string;
+  readonly tailscale: TailscaleSelf | null;
+}
+
+export const machineIdentity = (): MachineIdentity => ({
+  hostname: osHostname(),
+  bonjour: bonjourName(),
+  tailscale: tailscaleSelf(),
+});
+
+/**
+ * Host names to accept for a given bind address.
+ *
+ * `.local` (mDNS) and single-label names can be answered by anyone on the
+ * local network, so they're only safe when the server is already reachable
+ * from that network (wildcard bind): spoofing them then gains nothing over
+ * connecting directly. On a specific bind, e.g. the Tailscale IP only, a LAN
+ * attacker could spoof such a name and rebind it to the tailnet address, so
+ * only the MagicDNS FQDN is accepted, and only when the bind is a Tailscale IP.
+ */
+export const namesFor = (bindHost: string, id: MachineIdentity): string[] => {
+  const ts = id.tailscale;
+  if (!isWildcard(bindHost)) {
+    const bound = normalizeHost(bindHost);
+    const onTailnet = ts?.ips.some((ip) => normalizeHost(ip) === bound) ?? false;
+    return onTailnet && ts?.dnsName ? [ts.dnsName] : [];
+  }
+  const h = id.hostname;
+  const short = h.split(".")[0]!;
+  const own = isIP(h) ? [] : [h, short, `${short}.local`];
+  return [...new Set([...own, ...(id.bonjour ? [id.bonjour] : []), ...[ts?.dnsName, ts?.hostName].filter((n): n is string => !!n)])];
 };
 
 /** Addresses worth printing: IPv4 plus non-link-local IPv6 (fe80:: needs a zone id browsers won't take). */

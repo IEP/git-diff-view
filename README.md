@@ -31,7 +31,7 @@ git-diff-view --host 100.x.y.z             # your Tailscale IP: reachable from t
 bun dev -- /path/to/repo --lan             # same flags in dev mode (HOST=0.0.0.0 works too)
 ```
 
-It prints the URLs that work: LAN IPs, the Tailscale IP, `<name>.local`, and the MagicDNS name (`machine.tailnet.ts.net`, read from `tailscale status` when the CLI is installed).
+It prints the URLs that work. With `--lan` those are the LAN IPs, the Tailscale IP, `<name>.local` and the MagicDNS name (`machine.tailnet.ts.net`, read from `tailscale status` when the CLI is installed). With `--host <tailscale-ip>` only the IP and the full MagicDNS name are accepted. Short names and `.local` can be spoofed by anyone on the LAN, so they would let a LAN attacker reach a tailnet-only server.
 
 **There is no login.** Anyone who can reach the port can read every file in the repository's history. Prefer the Tailscale-IP bind on networks you don't control.
 
