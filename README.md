@@ -13,6 +13,16 @@ bun dev -- /path/to/repo        # or: REPO=/path/to/repo bun dev   (defaults to 
 # PORT=4000 bun dev -- ...      # default port 3000
 ```
 
+### Standalone binary (no `bun dev`)
+
+```bash
+bun run install:bin                    # → ~/.bun/bin/git-diff-view, already on PATH; re-run after changes
+cd /path/to/repo && git-diff-view      # or: git-diff-view /path/to/repo
+bun run build                          # alternative: just build dist/git-diff-view
+```
+
+The binary runs in production mode (no HMR) and needs only `git` (plus `gh` for pull requests) on the machine. Rebuild after changing the source.
+
 Then open the printed URL. The URL keeps `?base=…&head=…&file=…`, so you can bookmark or share it.
 
 ## Using it

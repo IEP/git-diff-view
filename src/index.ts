@@ -11,7 +11,7 @@ const repoPath = resolve(process.argv[2] ?? process.env.REPO ?? process.cwd());
 const probe = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { cwd: repoPath, stderr: "pipe" });
 if (probe.exitCode !== 0) {
   console.error(`✖ Not a git repository: ${repoPath}`);
-  console.error(`  Usage: bun dev -- <path-to-repo>   (or REPO=<path> bun dev)`);
+  console.error(`  Usage: git-diff-view <path-to-repo>   (or: bun dev -- <path-to-repo>)`);
   process.exit(1);
 }
 
