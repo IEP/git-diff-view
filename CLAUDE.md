@@ -104,3 +104,10 @@ bun --hot ./index.ts
 ```
 
 For more information, read the Bun API docs in `node_modules/bun-types/docs/**.mdx`.
+
+## Network exposure
+
+- The server binds `127.0.0.1` by default. `--lan` (all interfaces) or `--host <addr>` (e.g. the Tailscale IP) expose it; flags live in `src/index.ts`.
+- `/api/*` is guarded by `src/server/HostGuard.ts`: the `Host` header must be loopback, one of this machine's interface IPs, its hostname / `.local` / Tailscale MagicDNS name, or an `--allow-host` / `$ALLOWED_HOSTS` entry, on the bound port. This blocks DNS rebinding. Never loosen it to "any Host"; add names explicitly.
+- There is no auth: anyone who reaches the port can read the repo. Keep loopback the default.
+- When testing a bind locally, use an unused port. Old `git-diff-view` binaries often sit on 127.0.0.1:3917/3918, and macOS lets a `0.0.0.0` listener share the port, so loopback-resolved names hit the old process.

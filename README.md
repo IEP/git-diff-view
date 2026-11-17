@@ -21,6 +21,22 @@ cd /path/to/repo && git-diff-view      # or: git-diff-view /path/to/repo
 bun run build                          # alternative: just build dist/git-diff-view
 ```
 
+### From other machines (LAN, Tailscale)
+
+By default the server listens on `127.0.0.1` only. To open it from a phone, tablet or another computer:
+
+```bash
+git-diff-view --lan                        # all interfaces; prints every URL that reaches it
+git-diff-view --host 100.x.y.z             # your Tailscale IP: reachable from the tailnet only, not the LAN
+bun dev -- /path/to/repo --lan             # same flags in dev mode (HOST=0.0.0.0 works too)
+```
+
+It prints the URLs that work: LAN IPs, the Tailscale IP, `<name>.local`, and the MagicDNS name (`machine.tailnet.ts.net`, read from `tailscale status` when the CLI is installed).
+
+**There is no login.** Anyone who can reach the port can read every file in the repository's history. Prefer the Tailscale-IP bind on networks you don't control.
+
+The API still rejects requests whose `Host` isn't one of this machine's own addresses or names, which blocks DNS rebinding. If you reach it through some other name, such as a reverse proxy or custom DNS, allow that name with `--allow-host diff.example.lan` (repeatable) or `ALLOWED_HOSTS=a,b`. `git-diff-view --help` lists all options.
+
 The binary runs in production mode (no HMR) and needs only `git` (plus `gh` for pull requests) on the machine. Rebuild after changing the source.
 
 Then open the printed URL. The URL keeps `?base=…&head=…&file=…`, so you can bookmark or share it.
@@ -58,7 +74,8 @@ PR commits that aren't in your clone yet, such as those from forks, are fetched 
 ## Layout
 
 ```
-src/index.ts             Bun.serve: SPA + /api/* → Effect handler
+src/index.ts             Bun.serve: CLI flags, SPA + /api/* → Effect handler
+src/server/HostGuard.ts  Host-header allow-list (loopback, own IPs, .local, MagicDNS)
 src/server/Git.ts        Git service (Effect): refs, compare, file diff, -z parsers
 src/server/GitHub.ts     GitHub service: remote detection, PR list / resolve via `gh`
 src/server/Api.ts        HttpRouter routes, schema-validated query params
