@@ -20,6 +20,8 @@ Then open the printed URL. The URL keeps `?base=…&head=…&file=…`, so you c
 | Action | How |
 |---|---|
 | Pick revisions | Base / Head pickers: search branches, remotes, tags and commits, or type any revision |
+| Pick from the graph | Commit graph panel above the diff: **click** a commit to view it alone, **drag** the **A** / **B** handles in the left gutter to move either end (the list auto-scrolls near its edges, Esc cancels), or **Shift-click** to select a range. Commits whose changes are in the diff are tinted. Right-click or the A / B / Enter keys work too |
+| Show / hide the graph | **Graph** button in the header, or the hide button at the right of the graph's bar |
 | Navigate tree | ↑ ↓ to move, ← → to collapse/expand, Enter to toggle, Home/End |
 | Next / previous file | F7 / Shift+F7, or the arrows in the diff header |
 | Filter | Box above the tree (Esc to clear, ↓ to jump into the tree) |
@@ -52,7 +54,8 @@ src/server/GitHub.ts     GitHub service: remote detection, PR list / resolve via
 src/server/Api.ts        HttpRouter routes, schema-validated query params
 src/shared/api.ts        Wire types shared by server and client
 src/lib/tree.ts          Changed files → compacted directory tree
-src/components/          RefPicker, PullPicker, FileTree, DiffPane
+src/lib/graph.ts         Commit graph lane layout, A..B range
+src/components/          RefPicker, PullPicker, CommitGraph, FileTree, DiffPane
 ```
 
 Tests: `bun test`

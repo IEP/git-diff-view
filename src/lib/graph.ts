@@ -93,3 +93,32 @@ function firstFree(lanes: ReadonlyArray<Lane | null>): number {
   const i = lanes.indexOf(null);
   return i < 0 ? lanes.length : i;
 }
+
+/**
+ * Commits `git log base..head` would list, limited to the loaded window:
+ * reachable from `head` through parents, minus everything reachable from
+ * `base`. These are the commits whose changes a base → head diff contains
+ * (when base is an ancestor of head).
+ */
+export function commitsInRange(
+  commits: ReadonlyArray<GraphCommit>,
+  base: string | null,
+  head: string | null,
+): Set<string> {
+  const parents = new Map(commits.map((c) => [c.sha, c.parents]));
+  const reach = (start: string | null) => {
+    const seen = new Set<string>();
+    const stack = start && parents.has(start) ? [start] : [];
+    while (stack.length > 0) {
+      const sha = stack.pop()!;
+      if (seen.has(sha)) continue;
+      seen.add(sha);
+      for (const p of parents.get(sha) ?? []) if (parents.has(p) && !seen.has(p)) stack.push(p);
+    }
+    return seen;
+  };
+  const excluded = reach(base);
+  const range = new Set<string>();
+  for (const sha of reach(head)) if (!excluded.has(sha)) range.add(sha);
+  return range;
+}

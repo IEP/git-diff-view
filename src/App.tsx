@@ -4,12 +4,14 @@ import {
   Columns2Icon,
   ExternalLinkIcon,
   FolderGit2Icon,
+  GitGraphIcon,
   Loader2Icon,
   MoonIcon,
   RowsIcon,
   SunIcon,
   WrapTextIcon,
 } from "lucide-react";
+import { CommitGraph } from "@/components/CommitGraph";
 import { DiffPane } from "@/components/DiffPane";
 import { FileTree } from "@/components/FileTree";
 import { PullPicker } from "@/components/PullPicker";
@@ -93,6 +95,8 @@ function defaultRefs(repo: RepoInfo, refs: RefsResponse): { base: string; head: 
 // App
 // ---------------------------------------------------------------------------
 
+const GRAPH_PAGE = 500;
+
 export function App() {
   const initial = useMemo(readUrl, []);
   const [base, setBase] = useState(initial.base);
@@ -112,6 +116,7 @@ export function App() {
 
   const [mode, setMode] = usePref<"split" | "unified">("gdv.mode", "split");
   const [wrap, setWrap] = usePref<"on" | "off">("gdv.wrap", "off");
+  const [showGraph, setShowGraph] = usePref<"on" | "off">("gdv.graph", "on");
   const [theme, setTheme] = usePref<"light" | "dark">(
     "gdv.theme",
     window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light",
@@ -151,6 +156,23 @@ export function App() {
   const compare = useAsync(base && head ? (s) => api.compare(base, head, s) : null, [base, head]);
   const compareData = compare.status === "success" ? compare.data : null;
 
+  // Commit graph. "Load more" raises the limit; the graph keeps the old page on screen meanwhile.
+  const [graphLimit, setGraphLimit] = useState(GRAPH_PAGE);
+  const graph = useAsync(showGraph === "on" ? (s) => api.graph(graphLimit, s) : null, [graphLimit, showGraph]);
+  // A / B markers. Held across compare reloads (and set optimistically on a pick) so they don't blink.
+  const [marked, setMarked] = useState<{ base: string | null; head: string | null }>({ base: null, head: null });
+  useEffect(() => {
+    if (compareData) setMarked({ base: compareData.base.sha, head: compareData.head.sha });
+  }, [compareData]);
+  const compareCommits = useCallback(
+    (a: string, b: string) => {
+      setMarked({ base: a, head: b });
+      chooseBase(a);
+      chooseHead(b);
+    },
+    [chooseBase, chooseHead],
+  );
+
   // Files in the order they appear in the tree, for next / previous navigation.
   const ordered = useMemo(() => (compareData ? filesInTreeOrder(buildTree(compareData.files)) : []), [compareData]);
   const selectedIndex = ordered.findIndex((f) => f.path === selected);
@@ -184,6 +206,48 @@ export function App() {
   }, [go]);
 
   const fatal = repo.status === "error" ? repo.error : refs.status === "error" ? refs.error : null;
+
+  const comparison =
+    pr && pull.status === "error" ? (
+    <Message tone="error">
+      Couldn't load pull request #{pr}: {pull.error.message}
+    </Message>
+  ) : pr && !pullData ? (
+    <Message>
+      <Loader2Icon className="size-4 animate-spin" /> Loading pull request #{pr}…
+    </Message>
+  ) : compare.status === "error" ? (
+    <Message tone="error">{compare.error.message}</Message>
+  ) : !compareData ? (
+    <Message>
+      <Loader2Icon className="size-4 animate-spin" /> Comparing…
+    </Message>
+  ) : (
+    <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
+      <ResizablePanel defaultSize="28" minSize="15" maxSize="60">
+        <FileTree
+          key={`${compareData.base.sha}..${compareData.head.sha}`}
+          files={compareData.files}
+          selectedPath={selected}
+          onSelect={(f) => setSelected(f.path)}
+        />
+      </ResizablePanel>
+      <ResizableHandle />
+      <ResizablePanel defaultSize="72" minSize="30">
+        <DiffPane
+          baseSha={compareData.base.sha}
+          headSha={compareData.head.sha}
+          file={selectedFile}
+          mode={mode}
+          wrap={wrap === "on"}
+          theme={theme}
+          position={{ index: selectedIndex, total: ordered.length }}
+          onPrev={() => go(-1)}
+          onNext={() => go(1)}
+        />
+      </ResizablePanel>
+    </ResizablePanelGroup>
+  );
 
   return (
     <TooltipProvider delayDuration={400}>
@@ -275,6 +339,23 @@ export function App() {
                   <Toggle
                     size="sm"
                     variant="outline"
+                    pressed={showGraph === "on"}
+                    onPressedChange={(p) => setShowGraph(p ? "on" : "off")}
+                    aria-label="Show commit graph"
+                  >
+                    <GitGraphIcon className="size-4" />
+                    Graph
+                  </Toggle>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>{showGraph === "on" ? "Hide" : "Show"} the commit graph</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Toggle
+                    size="sm"
+                    variant="outline"
                     pressed={wrap === "on"}
                     onPressedChange={(p) => setWrap(p ? "on" : "off")}
                     aria-label="Wrap long lines"
@@ -301,45 +382,26 @@ export function App() {
         {/* ---------------------------------------------------------------- body */}
         {fatal ? (
           <Message tone="error">{fatal.message}</Message>
-        ) : pr && pull.status === "error" ? (
-          <Message tone="error">
-            Couldn't load pull request #{pr}: {pull.error.message}
-          </Message>
-        ) : pr && !pullData ? (
-          <Message>
-            <Loader2Icon className="size-4 animate-spin" /> Loading pull request #{pr}…
-          </Message>
-        ) : compare.status === "error" ? (
-          <Message tone="error">{compare.error.message}</Message>
-        ) : !compareData ? (
-          <Message>
-            <Loader2Icon className="size-4 animate-spin" /> Comparing…
-          </Message>
-        ) : (
-          <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
-            <ResizablePanel defaultSize="28" minSize="15" maxSize="60">
-              <FileTree
-                key={`${compareData.base.sha}..${compareData.head.sha}`}
-                files={compareData.files}
-                selectedPath={selected}
-                onSelect={(f) => setSelected(f.path)}
+        ) : showGraph === "on" ? (
+          // The graph sits outside the compare states so a pick doesn't unmount it (scroll, focus, pending A survive).
+          <ResizablePanelGroup orientation="vertical" className="min-h-0 flex-1">
+            <ResizablePanel id="graph" defaultSize="35" minSize="12" maxSize="80" className="flex flex-col">
+              <CommitGraph
+                graph={graph}
+                baseSha={marked.base}
+                headSha={marked.head}
+                onCompare={compareCommits}
+                onLoadMore={() => setGraphLimit((n) => n + GRAPH_PAGE)}
+                onHide={() => setShowGraph("off")}
               />
             </ResizablePanel>
             <ResizableHandle />
-            <ResizablePanel defaultSize="72" minSize="30">
-              <DiffPane
-                baseSha={compareData.base.sha}
-                headSha={compareData.head.sha}
-                file={selectedFile}
-                mode={mode}
-                wrap={wrap === "on"}
-                theme={theme}
-                position={{ index: selectedIndex, total: ordered.length }}
-                onPrev={() => go(-1)}
-                onNext={() => go(1)}
-              />
+            <ResizablePanel id="compare" defaultSize="65" minSize="20" className="flex flex-col">
+              {comparison}
             </ResizablePanel>
           </ResizablePanelGroup>
+        ) : (
+          comparison
         )}
       </div>
     </TooltipProvider>
