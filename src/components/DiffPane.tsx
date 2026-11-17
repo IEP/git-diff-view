@@ -1,6 +1,6 @@
 import { DiffModeEnum, DiffView } from "@git-diff-view/react";
 import "@git-diff-view/react/styles/diff-view-pure.css";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { ArrowRightIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon, FileWarningIcon, Loader2Icon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -149,6 +149,22 @@ function DiffBody({
   wrap: boolean;
   theme: "light" | "dark";
 }) {
+  // Ship full contents when we have them: that enables "expand context" and
+  // accurate syntax highlighting. For very large files we fall back to hunks only.
+  // No content on either side (too large, or the server withheld it): render the hunks alone.
+  const withContent = !diff.tooLarge && (diff.oldContent !== null || diff.newContent !== null);
+  // DiffView rebuilds its DiffFile, and with it any expanded context, whenever `data` is a
+  // new object. Polling re-renders this every few seconds, so keep `data` stable until the
+  // diff itself changes (`useHeldAsync` keeps `diff` the same object while it is unchanged).
+  const data = useMemo(
+    () => ({
+      oldFile: { fileName: file.oldPath ?? file.path, content: withContent ? (diff.oldContent ?? "") : undefined },
+      newFile: { fileName: file.path, content: withContent ? (diff.newContent ?? "") : undefined },
+      hunks: [diff.patch],
+    }),
+    [diff, file.path, file.oldPath, withContent],
+  );
+
   if (diff.binary) {
     return (
       <Centered>
@@ -177,10 +193,6 @@ function DiffBody({
     return <Centered>{reason}</Centered>;
   }
 
-  // Ship full contents when we have them: that enables "expand context" and
-  // accurate syntax highlighting. For very large files we fall back to hunks only.
-  // No content on either side (too large, or the server withheld it): render the hunks alone.
-  const withContent = !diff.tooLarge && (diff.oldContent !== null || diff.newContent !== null);
   // A new (or deleted) file has only one side, so split view would leave half
   // the pane empty. Show it as a single full-width column instead.
   const oneSided = file.status === "added" || file.status === "deleted";
@@ -194,11 +206,7 @@ function DiffBody({
       )}
       <DiffView
         className="text-xs"
-        data={{
-          oldFile: { fileName: file.oldPath ?? file.path, content: withContent ? (diff.oldContent ?? "") : undefined },
-          newFile: { fileName: file.path, content: withContent ? (diff.newContent ?? "") : undefined },
-          hunks: [diff.patch],
-        }}
+        data={data}
         diffViewMode={viewMode}
         diffViewTheme={theme}
         diffViewWrap={wrap}
