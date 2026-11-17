@@ -76,17 +76,15 @@ On the first search of a comparison the server reads it as one `git diff -U0` an
 The same viewer runs natively in [Herdr](https://herdr.dev) as a mod, in a tab next to your terminals: no server, no browser. It has the commit graph with A / B handles, the Base / Head pickers (working tree and index included), pull requests, the file tree and filter, unified or side-by-side diffs with expandable context, wrap, F7 navigation, search over the changed lines, and live updates.
 
 ```bash
-bun run install:herdr        # builds herdr/git-diff/core.js and links ~/.config/herdr-app/mods/git-diff here
+bun run install:herdr        # build, link ~/.config/herdr-app/mods/git-diff here, add the Diff button
+bun run uninstall:herdr      # back to your original layout; removes the copy and the link
 ```
 
-Open it with the command `mod.open:git-diff` (`herdr-app do mod.open --name git-diff`), best bound to a key in `~/.config/herdr-app/keys.json` (editing that file makes all of it yours, so Herdr stops updating its default shortcuts):
+Click **Diff** at the right of the tab bar, after Files and Changes. It opens a tab **Diff · <repo>** for the focused terminal's repository, or switches to it when the space already has one; on another machine's space, git runs on that machine. The tab remembers its comparison. Without the button, `herdr-app do mod.open --name git-diff` does the same.
 
-```json
-"global": { "cmd-shift-g": "mod.open:git-diff" },
-"mod:git-diff": { "cmd-shift-f": "git-diff.search", "f7": "git-diff.next-file", "shift-f7": "git-diff.prev-file" }
-```
+The button needs a place in the window, and Herdr's own tab bar and menus can't be extended, so the installer copies the layout you're on (`main` → `main-diff`, with Herdr's `layout.clone`), switches to it, and in the copy wraps the tab bar block in a row with the button beside it. Herdr's mods (tab bar, menus, panels) stay untouched and keep updating; only that layout copy no longer follows Herdr's changes to `main`. Uninstall switches back and deletes the copy, unless you edited it.
 
-It opens a tab **Diff · <repo>** for the focused terminal's repository, on that terminal's machine too: a space on another machine runs git there through Herdr. The tab remembers its comparison. Commands for keys: `git-diff.next-file`, `prev-file`, `search`, `graph`, `split`, `unified`, `wrap`, `reload`, `pick-base`, `pick-head`, `pick-pr`.
+Commands for keys in `keys.json` (`"mod:git-diff": { "f7": "git-diff.next-file" }`): `git-diff.next-file`, `prev-file`, `search`, `graph`, `split`, `unified`, `wrap`, `reload`, `pick-base`, `pick-head`, `pick-pr`.
 
 Differences from the web app, from what Herdr's mod runtime allows:
 - No syntax highlighting.
@@ -130,11 +128,12 @@ src/shared/gitText.ts    Pure git-output parsers (name-status, numstat, log, -U0
 src/lib/tree.ts          Changed files → compacted directory tree
 src/lib/graph.ts         Commit graph lane layout, A..B range
 src/components/          RefPicker, PullPicker, CommitGraph, FileTree, DiffSearch, DiffPane
-herdr/build.ts           Bundles herdr/src → herdr/git-diff/core.js; --install links the mod, --watch reloads it
+herdr/build.ts           Bundles herdr/src → herdr/git-diff/core.js; --install links the mod and adds the button, --uninstall undoes it, --watch reloads it
+herdr/layout.ts          Wraps a layout's tab bar block with the Diff button (for the installer's layout copy)
 herdr/src/repo.ts        The mod's git layer: Git + GitHub services as plain async over Herdr's exec / readTextFile
 herdr/src/diffModel.ts   One file's diff as rows: hunks, expandable gaps, unified / side-by-side pairs
 herdr/src/search.ts      Search over a -U0 patch's changed lines, in memory
-herdr/git-diff/          The Herdr mod (gpui-kit JS): main.js (state, launcher), graph, tree, diff, search, picker, ui
+herdr/git-diff/          The Herdr mod (gpui-kit JS): main.js (state, toolbar button, launcher), graph, tree, diff, search, picker, ui
 ```
 
 Tests: `bun test`

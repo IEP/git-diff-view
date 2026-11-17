@@ -2,10 +2,12 @@
 // (branches, tags, commits, the working tree, the index, pull requests) with a commit
 // graph, file tree, unified or side-by-side diff, and search over the changed lines.
 //
-// Two ways in:
-//   - mod.open:git-diff (a key or the palette) runs it as an invisible popup that opens
-//     a new tab "Diff · <repo>" for the focused pane's repository, then closes itself;
-//   - that tab is this mod as a pane, with props { folder, on }.
+// Three ways in:
+//   - the Diff button beside the tab bar (this mod with props { mode: "toolbar" }, placed
+//     by `bun run install:herdr` in a personal copy of the layout);
+//   - mod.open:git-diff (a key or `herdr-app do`), an invisible popup that closes itself;
+//   - both open the tab "Diff · <repo>" for the focused pane's repository, or switch to it
+//     when the space already has one. That tab is this mod as a pane, props { folder, on }.
 //
 // Everything runs git through Herdr's exec (on the space's machine), read-only.
 // Source: the git-diff-view repository's herdr/ folder; core.js is bundled from herdr/src.
@@ -33,13 +35,22 @@ function here() {
   return { space, folder: pane?.cwd || f?.cwd || space?.folder || null, on: space?.machine ?? null };
 }
 
-async function launch() {
+const tabName = (root) => `Diff · ${root.split("/").pop()}`;
+
+/** The space's diff tab for the focused repository: switched to if it exists, else opened. */
+async function openDiff() {
   const { space, folder, on } = here();
   if (!space || !folder) throw new Error("No folder to compare: focus a terminal inside a repository.");
   const r = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: folder, on });
   if (r.code !== 0) throw new Error(`Not a git repository: ${folder}`);
   const root = r.stdout.trim();
-  run("tab.new", { name: `Diff · ${root.split("/").pop()}`, space: space.id, mod: "git-diff", props: { folder: root, on } });
+  const existing = space.tabs.find((t) => t.name === tabName(root));
+  if (existing) run("tab.select", { id: existing.id });
+  else run("tab.new", { name: tabName(root), space: space.id, mod: "git-diff", props: { folder: root, on } });
+}
+
+function failed(e) {
+  notify({ title: "Diff viewer", body: String(e?.message ?? e), level: "error" });
 }
 
 // ---------------------------------------------------------------- viewer
@@ -47,14 +58,18 @@ async function launch() {
 export default class GitDiff extends View {
   init(_props, cx) {
     const p = props() ?? {};
+    if (p.mode === "toolbar") {
+      this.toolbar = true;
+      return;
+    }
     if (p.overlay) {
       this.launcher = true;
       if (checking()) return;
       cx.spawn(async () => {
         try {
-          await launch();
+          await openDiff();
         } catch (e) {
-          notify({ title: "Diff viewer", body: String(e?.message ?? e), level: "error" });
+          failed(e);
         } finally {
           closeOverlay(p.overlay);
         }
@@ -579,6 +594,7 @@ export default class GitDiff extends View {
   render(cx) {
     const t = theme();
     if (this.launcher) return div();
+    if (this.toolbar) return toolbarButton(t);
     const root = v_flex()
       .id("git-diff")
       .size_full()
@@ -699,6 +715,45 @@ export default class GitDiff extends View {
 }
 
 // ---------------------------------------------------------------- helpers
+
+/** The Diff button beside the tab bar, styled like its Files / Changes buttons. */
+function toolbarButton(t) {
+  const space = spaces().find((s) => s.active);
+  const tab = space?.tabs.find((x) => x.active);
+  const on = Boolean(tab?.name?.startsWith("Diff · "));
+  return h_flex()
+    .size_full()
+    .pr(10)
+    .items_center()
+    .bg(t.chrome)
+    .border_b(1)
+    .border_color(t.border)
+    .child(h_flex()
+      .id("diff-button")
+      .h(26)
+      .px(8)
+      .gap(5)
+      .flex_none()
+      .items_center()
+      .rounded(6)
+      .text_size(12)
+      .bg(on ? t.selected : t.chrome)
+      .text_color(on ? t.foreground : t.muted)
+      .hover((s) => s.bg(t.hover))
+      .tooltip("Compare revisions of this repository")
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation()) // a press here shouldn't drag the window
+      .on_click((_e, cx) => {
+        cx.spawn(async () => {
+          try {
+            await openDiff();
+          } catch (e) {
+            failed(e);
+          }
+        });
+      })
+      .child(icon("graph", 14))
+      .child("Diff"));
+}
 
 function message(t, text, error = false) {
   return div().flex_1().flex().items_center().justify_center().p(24).text_color(error ? t.ansi1 : t.muted).child(text);

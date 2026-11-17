@@ -9,7 +9,8 @@
     "build": "bun build.ts",
     "install:bin": "bun build.ts --install",
     "build:herdr": "bun herdr/build.ts",
-    "install:herdr": "bun herdr/build.ts --install"
+    "install:herdr": "bun herdr/build.ts --install",
+    "uninstall:herdr": "bun herdr/build.ts --uninstall"
   },
   "dependencies": {
     "@effect/platform-bun": "^4.1.4",
