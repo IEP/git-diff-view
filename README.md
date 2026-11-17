@@ -54,6 +54,8 @@ Then open the printed URL. It opens on `main` (or `master`, …) → **Working t
 | Filter | Box above the tree (Esc to clear, ↓ to jump into the tree) |
 | Layout | Side-by-side or unified, line wrap, light/dark theme |
 
+The top row of the graph is the **working tree** (dashed dot, with the number of uncommitted files), drawn on top of HEAD: drag **B** onto it to include uncommitted work, or click it to see just the uncommitted changes against your branch.
+
 A handle dropped on a branch tip picks the branch by name, not its commit id: the current branch first, then another local branch, `HEAD`, a remote branch or a tag.
 
 ### Live updates

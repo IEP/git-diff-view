@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   CloudIcon,
   CopyIcon,
+  FilePenLineIcon,
   EyeIcon,
   GitBranchIcon,
   GitCompareArrowsIcon,
@@ -25,7 +26,7 @@ import {
 import type { AsyncState } from "@/lib/api";
 import { commitsInRange, layoutGraph, type GraphRow, type GraphSegment } from "@/lib/graph";
 import { cn } from "@/lib/utils";
-import { isPseudoRev, PSEUDO_LABEL, type GraphCommit, type GraphRef, type GraphResponse } from "@/shared/api";
+import { isPseudoRev, PSEUDO_LABEL, WORKTREE, type GraphCommit, type GraphRef, type GraphResponse } from "@/shared/api";
 
 const ROW_H = 26;
 const LANE_W = 14;
@@ -58,6 +59,8 @@ interface CommitGraphProps {
   readonly onLoadMore: () => void;
   /** Hide the whole graph panel. */
   readonly onHide: () => void;
+  /** Show a working-tree row above HEAD (`parent`), with this many changed files. */
+  readonly worktree: { readonly parent: string; readonly files: number } | null;
 }
 
 /**
@@ -68,7 +71,7 @@ interface CommitGraphProps {
  *   - shift-click          range from the last clicked commit to this one (older = A)
  * Commits whose changes are in the diff (`A..B`) are tinted, live while dragging.
  */
-export function CommitGraph({ graph, baseSha, headSha, onCompare, onLoadMore, onHide }: CommitGraphProps) {
+export function CommitGraph({ graph, baseSha, headSha, onCompare, onLoadMore, onHide, worktree }: CommitGraphProps) {
   const data = graph.status === "success" ? graph.data : null;
   // Keep showing the previous page while "load more" fetches the next one.
   const [shown, setShown] = useState<GraphResponse | null>(null);
@@ -76,7 +79,25 @@ export function CommitGraph({ graph, baseSha, headSha, onCompare, onLoadMore, on
     if (data) setShown(data);
   }, [data]);
 
-  const rows = useMemo(() => (shown ? layoutGraph(shown.commits) : []), [shown]);
+  // The working tree is drawn as a commit on top of HEAD, so it gets a lane, a drop target
+  // for the handles, and the range tint like any other row.
+  const parent = worktree?.parent ?? null;
+  const files = worktree?.files ?? 0;
+  const commits = useMemo(() => {
+    if (!shown) return [];
+    if (!parent) return shown.commits;
+    const row: GraphCommit = {
+      sha: WORKTREE,
+      shortSha: "",
+      parents: [parent],
+      refs: [],
+      subject: files === 0 ? "No uncommitted changes" : `Uncommitted changes · ${files} file${files === 1 ? "" : "s"}`,
+      author: "",
+      date: "",
+    };
+    return [row, ...shown.commits];
+  }, [shown, parent, files]);
+  const rows = useMemo(() => layoutGraph(commits), [commits]);
   const lanes = Math.min(Math.max(1, ...rows.map((r) => r.width)), MAX_LANES_SHOWN);
   const indexOf = useMemo(() => new Map(rows.map((r, i) => [r.commit.sha, i])), [rows]);
 
@@ -97,7 +118,9 @@ export function CommitGraph({ graph, baseSha, headSha, onCompare, onLoadMore, on
   const aIndex = aSha ? indexOf.get(aSha) : undefined;
   const bIndex = bSha ? indexOf.get(bSha) : undefined;
 
-  const range = useMemo(() => (shown ? commitsInRange(shown.commits, aSha, bSha) : EMPTY), [shown, aSha, bSha]);
+  const range = useMemo(() => (commits.length ? commitsInRange(commits, aSha, bSha) : EMPTY), [commits, aSha, bSha]);
+  // The working-tree row isn't a commit.
+  const rangeCommits = range.size - (range.has(WORKTREE) ? 1 : 0);
   // Both ends loaded, yet nothing is in A..B: B is behind A.
   const backwards = !!aSha && !!bSha && aSha !== bSha && aIndex !== undefined && bIndex !== undefined && range.size === 0;
   // The gutter bracket joins the two handles (by position; the tint is what's actually in the diff).
@@ -181,6 +204,12 @@ export function CommitGraph({ graph, baseSha, headSha, onCompare, onLoadMore, on
   /** One commit against its first parent, like `git show`. */
   const show = (c: GraphCommit) => {
     setAnchor(c.sha);
+    if (isPseudoRev(c.sha)) {
+      // Uncommitted changes against HEAD; not pinned, so a commit moves the base along.
+      setNotice(null);
+      onCompare(c.parents[0]!, c.sha);
+      return;
+    }
     const parent = c.parents[0];
     if (!parent) {
       setNotice(`${c.shortSha} is a root commit with no parent. Drag a handle onto it, or shift-click another commit.`);
@@ -306,7 +335,7 @@ export function CommitGraph({ graph, baseSha, headSha, onCompare, onLoadMore, on
             <span className="shrink-0">Move</span>
             <Badge kind={drag.end} />
             <span className="shrink-0">to</span>
-            <code className="shrink-0">{dragged.shortSha}</code>
+            <code className="shrink-0">{shortOf(dragged.sha)}</code>
             <span className="text-muted-foreground truncate">{dragged.subject}</span>
             <span className="text-muted-foreground ml-auto shrink-0">
               release to compare · <kbd>Esc</kbd> to cancel
@@ -341,8 +370,16 @@ export function CommitGraph({ graph, baseSha, headSha, onCompare, onLoadMore, on
                   <Badge kind="B" />
                   <code>{shortOf(bSha)}</code>
                   <span className="text-muted-foreground">
-                    · {range.size}
-                    {aIndex === undefined && shown.truncated ? "+" : ""} commit{range.size === 1 ? "" : "s"}
+                    ·{" "}
+                    {rangeCommits === 0 && range.has(WORKTREE) ? (
+                      "uncommitted only"
+                    ) : (
+                      <>
+                        {rangeCommits}
+                        {aIndex === undefined && shown.truncated ? "+" : ""} commit{rangeCommits === 1 ? "" : "s"}
+                        {range.has(WORKTREE) && " + uncommitted"}
+                      </>
+                    )}
                   </span>
                 </span>
               )
@@ -421,12 +458,12 @@ export function CommitGraph({ graph, baseSha, headSha, onCompare, onLoadMore, on
           {target && (
             <>
               <ContextMenuLabel className="truncate">
-                <code>{target.shortSha}</code> · {target.subject}
+                {isPseudoRev(target.sha) ? PSEUDO_LABEL[target.sha] : <code>{target.shortSha}</code>} · {target.subject}
               </ContextMenuLabel>
               <ContextMenuSeparator />
               <ContextMenuItem onSelect={() => show(target)} disabled={target.parents.length === 0}>
                 <EyeIcon />
-                View this commit
+                {isPseudoRev(target.sha) ? "View uncommitted changes" : "View this commit"}
                 <ContextMenuShortcut>↵</ContextMenuShortcut>
               </ContextMenuItem>
               <ContextMenuItem onSelect={() => moveEnd("A", target)} disabled={!headSha || target.sha === headSha || target.sha === baseSha}>
@@ -439,11 +476,15 @@ export function CommitGraph({ graph, baseSha, headSha, onCompare, onLoadMore, on
                 Move B (head) here
                 <ContextMenuShortcut>B</ContextMenuShortcut>
               </ContextMenuItem>
-              <ContextMenuSeparator />
-              <ContextMenuItem onSelect={() => void navigator.clipboard?.writeText(target.sha)}>
-                <CopyIcon />
-                Copy commit ID
-              </ContextMenuItem>
+              {!isPseudoRev(target.sha) && (
+                <>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem onSelect={() => void navigator.clipboard?.writeText(target.sha)}>
+                    <CopyIcon />
+                    Copy commit ID
+                  </ContextMenuItem>
+                </>
+              )}
             </>
           )}
         </ContextMenuContent>
@@ -483,6 +524,7 @@ interface RowProps {
 /** Memoized: a drag re-renders only the rows whose flags change, not the whole history. */
 const Row = memo(function Row({ row, index, lanes, focused, end, line, inRange, dim, grabbed, menuOpen, events }: RowProps) {
   const c = row.commit;
+  const local = isPseudoRev(c.sha);
   return (
     <div
       data-index={index}
@@ -508,9 +550,16 @@ const Row = memo(function Row({ row, index, lanes, focused, end, line, inRange, 
       {c.refs.map((r) => (
         <RefChip key={`${r.kind}:${r.name}`} r={r} />
       ))}
-      <span className="min-w-0 flex-1 truncate">{c.subject}</span>
+      {local && (
+        <span className="inline-flex shrink-0 items-center gap-1 rounded border border-dashed px-1 text-[10px] leading-4">
+          <FilePenLineIcon className="size-3" /> {PSEUDO_LABEL[WORKTREE]}
+        </span>
+      )}
+      <span className={cn("min-w-0 flex-1 truncate", local && "text-muted-foreground italic")}>{c.subject}</span>
       <span className="text-muted-foreground hidden w-32 shrink-0 truncate md:block">{c.author}</span>
-      <span className="text-muted-foreground hidden w-24 shrink-0 truncate text-right sm:block">{relativeDate(c.date)}</span>
+      <span className="text-muted-foreground hidden w-24 shrink-0 truncate text-right sm:block">
+        {c.date && relativeDate(c.date)}
+      </span>
       <code className="text-muted-foreground w-14 shrink-0 text-right">{c.shortSha}</code>
     </div>
   );
@@ -619,6 +668,7 @@ function GraphCell({
   const width = lanes * LANE_W;
   const cx = x(row.column);
   const isMerge = row.commit.parents.length > 1;
+  const local = isPseudoRev(row.commit.sha);
   const color = laneColor(row.color);
   return (
     <svg width={width} height={ROW_H} className="shrink-0 overflow-hidden" aria-hidden>
@@ -633,9 +683,10 @@ function GraphCell({
         cy={MID}
         r={DOT_R}
         opacity={dim ? 0.35 : 1}
-        fill={isMerge ? "var(--background)" : color}
+        fill={isMerge || local ? "var(--background)" : color}
         stroke={color}
         strokeWidth={2}
+        strokeDasharray={local ? "2 2" : undefined}
       />
     </svg>
   );

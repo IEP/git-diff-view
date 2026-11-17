@@ -474,6 +474,7 @@ export function App() {
                 onCompare={compareCommits}
                 onLoadMore={() => setGraphLimit((n) => n + GRAPH_PAGE)}
                 onHide={() => setShowGraph("off")}
+                worktree={repoData?.headSha ? { parent: repoData.headSha, files: repoData.uncommitted } : null}
               />
             </ResizablePanel>
             <ResizableHandle />

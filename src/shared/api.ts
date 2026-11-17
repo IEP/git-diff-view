@@ -21,6 +21,8 @@ export interface RepoInfo {
   /** Current branch name, or null when HEAD is detached. */
   readonly currentBranch: string | null;
   readonly headSha: string | null;
+  /** Files that differ from HEAD on disk: staged, unstaged and untracked (not ignored). */
+  readonly uncommitted: number;
 }
 
 export interface RefEntry {

@@ -187,11 +187,22 @@ export class Git extends Context.Service<
             Effect.map((s) => s.trim() || null),
             Effect.orElseSucceed(() => null),
           );
+          const uncommitted = headSha
+            ? yield* Effect.all([git("diff", "--name-only", "-z", "HEAD"), untrackedFiles], { concurrency: 2 }).pipe(
+                Effect.map(([changed, untracked]) => {
+                  const paths = new Set(changed.split("\0").filter(Boolean));
+                  for (const p of untracked) paths.add(p);
+                  return paths.size;
+                }),
+                Effect.orElseSucceed(() => 0),
+              )
+            : 0;
           return {
             root,
             name: basename(root),
             currentBranch: branch === "HEAD" ? null : branch,
             headSha,
+            uncommitted,
           } satisfies RepoInfo;
         });
 
