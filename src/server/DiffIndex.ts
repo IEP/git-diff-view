@@ -2,6 +2,9 @@ import { Database } from "bun:sqlite";
 import { Context, Effect, Layer, Schema } from "effect";
 import { isPseudoRev, type SearchHit, type SearchResponse } from "@/shared/api";
 import { Git, type GitError, type InvalidRef } from "./Git";
+import { parsePatch, type PatchRow } from "@/shared/gitText";
+
+export { parsePatch, unquotePath, type PatchRow } from "@/shared/gitText";
 
 /**
  * Full-text search over the changed lines of one comparison.
@@ -27,102 +30,6 @@ const SNIPPET = 240;
 /** Comparisons kept indexed at once (e.g. the one on screen plus a couple just left). */
 const CACHED_INDEXES = 3;
 export const MAX_HITS = 500;
-
-// ---------------------------------------------------------------------------
-// Patch parsing
-// ---------------------------------------------------------------------------
-
-export interface PatchRow {
-  readonly path: string;
-  readonly side: "old" | "new";
-  readonly line: number;
-  readonly text: string;
-}
-
-const HUNK = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
-const ESCAPES: Record<string, number> = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92 };
-
-/** Undo git's C-style quoting of a path (`"a/x\"y"`), octal escapes included. */
-export function unquotePath(raw: string): string {
-  if (!raw.startsWith('"') || !raw.endsWith('"') || raw.length < 2) return raw;
-  const bytes: number[] = [];
-  const body = raw.slice(1, -1);
-  for (let i = 0; i < body.length; i++) {
-    const c = body[i]!;
-    if (c !== "\\") {
-      bytes.push(...new TextEncoder().encode(c));
-      continue;
-    }
-    const next = body[++i] ?? "";
-    if (/[0-7]/.test(next)) {
-      bytes.push(parseInt(body.slice(i, i + 3), 8));
-      i += 2;
-    } else {
-      bytes.push(ESCAPES[next] ?? next.charCodeAt(0));
-    }
-  }
-  return new TextDecoder().decode(new Uint8Array(bytes));
-}
-
-/** The path from a `--- a/x` / `+++ b/x` header line, or null for `/dev/null`. */
-function headerPath(rest: string, prefix: "a/" | "b/"): string | null {
-  // git appends a TAB when an unquoted name contains a space; a real TAB would be quoted.
-  const raw = rest.startsWith('"') ? unquotePath(rest) : rest.replace(/\t$/, "");
-  return raw.startsWith(prefix) ? raw.slice(prefix.length) : null;
-}
-
-/**
- * Split a `git diff -U0` patch into its changed lines. Hunk bodies are consumed by
- * the counts in their `@@` header, never by prefix: a removed line `-- x` prints
- * as `--- x`, which would otherwise look like the next file's header.
- */
-export function parsePatch(patch: string): Array<PatchRow> {
-  const rows: Array<PatchRow> = [];
-  const lines = patch.split("\n");
-  let oldPath: string | null = null;
-  let newPath: string | null = null;
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i++]!;
-    if (line.startsWith("diff --git ")) {
-      oldPath = newPath = null;
-    } else if (line.startsWith("--- ")) {
-      oldPath = headerPath(line.slice(4), "a/");
-    } else if (line.startsWith("+++ ")) {
-      newPath = headerPath(line.slice(4), "b/");
-    } else {
-      const m = HUNK.exec(line);
-      if (!m) continue;
-      // `FileChange.path` is the head side, or the deleted path for deletions.
-      const path = newPath ?? oldPath;
-      let oldLine = Number(m[1]);
-      let newLine = Number(m[3]);
-      let oldLeft = m[2] === undefined ? 1 : Number(m[2]);
-      let newLeft = m[4] === undefined ? 1 : Number(m[4]);
-      while ((oldLeft > 0 || newLeft > 0) && i < lines.length) {
-        const body = lines[i++]!;
-        const text = body.slice(1);
-        if (body.startsWith("\\")) continue; // "\ No newline at end of file"
-        if (body.startsWith("-")) {
-          if (path !== null) rows.push({ path, side: "old", line: oldLine, text });
-          oldLine++;
-          oldLeft--;
-        } else if (body.startsWith("+")) {
-          if (path !== null) rows.push({ path, side: "new", line: newLine, text });
-          newLine++;
-          newLeft--;
-        } else {
-          // Context (only with -U > 0): advances both sides, not a change.
-          oldLine++;
-          newLine++;
-          oldLeft--;
-          newLeft--;
-        }
-      }
-    }
-  }
-  return rows;
-}
 
 // ---------------------------------------------------------------------------
 // Index

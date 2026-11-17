@@ -3,6 +3,9 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { BunServices } from "@effect/platform-bun";
 import type { GitHubRepo, PullResolved, PullsResponse, PullSummary } from "@/shared/api";
 import { Git, GitError, OBJECT_ID } from "./Git";
+import { parseGitHubRemote } from "@/shared/gitText";
+
+export { parseGitHubRemote } from "@/shared/gitText";
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -24,39 +27,6 @@ export class GitHubError extends Schema.TaggedError<GitHubError>()("GitHubError"
 
 /** Remotes checked in order: in a fork workflow, PRs live on `upstream`. */
 const REMOTE_CANDIDATES = ["upstream", "origin"] as const;
-
-const SEGMENT = /^[A-Za-z0-9_.-]+$/;
-
-/**
- * Extract owner/name from a github.com remote URL. Accepts
- *   git@github.com:owner/repo(.git)
- *   https://[user[:token]@]github.com/owner/repo(.git)(/)
- *   ssh://git@github.com[:22]/owner/repo(.git)
- *   git://github.com/owner/repo
- * Returns null for anything else, including GitHub Enterprise hosts.
- */
-export function parseGitHubRemote(url: string): { owner: string; name: string } | null {
-  let path: string;
-  const scp = /^[\w.-]+@github\.com:(.+)$/i.exec(url);
-  if (scp) {
-    path = scp[1]!;
-  } else {
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      return null;
-    }
-    if (!["https:", "http:", "ssh:", "git:", "git+ssh:"].includes(parsed.protocol)) return null;
-    if (parsed.hostname.toLowerCase() !== "github.com") return null;
-    path = decodeURIComponent(parsed.pathname);
-  }
-  const parts = path.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "").split("/");
-  if (parts.length !== 2) return null;
-  const [owner, name] = parts as [string, string];
-  if (!SEGMENT.test(owner) || !SEGMENT.test(name) || name === "." || name === "..") return null;
-  return { owner, name };
-}
 
 // ---------------------------------------------------------------------------
 // gh output schemas (GitHub data is untrusted input)

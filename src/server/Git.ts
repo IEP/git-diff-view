@@ -4,6 +4,19 @@ import { BunServices } from "@effect/platform-bun";
 import { lstat, readlink, realpath } from "node:fs/promises";
 import { basename, dirname, join, sep } from "node:path";
 import { INDEX, isPseudoRev, WORKTREE } from "@/shared/api";
+import {
+  diffRange,
+  isRepoPath,
+  lineCount,
+  looksBinary,
+  OBJECT_ID,
+  parseGraphLog,
+  parseNameStatus,
+  parseNumstat,
+  sideOf,
+  untrackedPatch,
+  type NumstatEntry,
+} from "@/shared/gitText";
 import type {
   ChangeStatus,
   CommitEntry,
@@ -80,8 +93,6 @@ const READ_ONLY_SUBCOMMANDS = new Set([
   "ls-files",
 ]);
 
-/** A full object id (SHA-1 or SHA-256). Anything from outside must match before git sees it. */
-export const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 const FETCH_TIMEOUT = "90 seconds";
 
@@ -600,182 +611,7 @@ export class Git extends Context.Service<
     ).pipe(Layer.provide(BunServices.layer));
 }
 
-// ---------------------------------------------------------------------------
-// Parsers for `git diff -z` output
-// ---------------------------------------------------------------------------
-
-const STATUS_BY_LETTER: Record<string, ChangeStatus> = {
-  A: "added",
-  M: "modified",
-  D: "deleted",
-  R: "renamed",
-  C: "copied",
-  T: "typechange",
-};
-
-/**
- * `--name-status -z` emits NUL-separated tokens:
- *   `M\0path\0`  or  `R087\0old\0new\0` (renames/copies carry two paths).
- */
-export function parseNameStatus(out: string): Array<Omit<FileChange, "additions" | "deletions" | "binary">> {
-  const tokens = out.split("\0");
-  const result: Array<Omit<FileChange, "additions" | "deletions" | "binary">> = [];
-  let i = 0;
-  while (i < tokens.length) {
-    const code = tokens[i++];
-    if (!code) continue;
-    const letter = code[0]!;
-    const status = STATUS_BY_LETTER[letter] ?? "unknown";
-    if (letter === "R" || letter === "C") {
-      const oldPath = tokens[i++] ?? "";
-      const path = tokens[i++] ?? "";
-      const score = Number.parseInt(code.slice(1), 10);
-      result.push({ status, path, oldPath, similarity: Number.isNaN(score) ? null : score });
-    } else {
-      const path = tokens[i++] ?? "";
-      result.push({ status, path, oldPath: null, similarity: null });
-    }
-  }
-  return result;
-}
-
-/**
- * `--numstat -z` emits `added\tdeleted\tpath\0`, or for renames
- * `added\tdeleted\t\0old\0new\0`. Binary files report `-\t-`.
- * Keyed by the head-side path.
- */
-export interface NumstatEntry {
-  readonly additions: number;
-  readonly deletions: number;
-  readonly binary: boolean;
-  /** The base-side path of a rename or copy. */
-  readonly oldPath: string | null;
-}
-
-/** `git diff --numstat -z` keyed by head-side path, in git's order. */
-export function parseNumstat(out: string): Map<string, NumstatEntry> {
-  const tokens = out.split("\0");
-  const result = new Map<string, NumstatEntry>();
-  let i = 0;
-  while (i < tokens.length) {
-    const record = tokens[i++];
-    if (!record) continue;
-    const [added = "", deleted = "", inlinePath = ""] = record.split("\t");
-    let path = inlinePath;
-    let oldPath: string | null = null;
-    if (path === "") {
-      oldPath = tokens[i++] ?? null;
-      path = tokens[i++] ?? "";
-    }
-    const binary = added === "-" && deleted === "-";
-    result.set(path, {
-      additions: binary ? 0 : Number(added) || 0,
-      deletions: binary ? 0 : Number(deleted) || 0,
-      binary,
-      oldPath,
-    });
-  }
-  return result;
-}
-
-/**
- * Parse `git log --decorate=full --format=%H%x00%P%x00%D%x00%s%x00%an%x00%aI%x1e`.
- * Records end with RS (0x1e); a subject can't contain NUL or RS.
- */
-export function parseGraphLog(out: string): Array<GraphCommit> {
-  const commits: Array<GraphCommit> = [];
-  for (const raw of out.split("\x1e")) {
-    const record = raw.replace(/^\n/, "");
-    if (!record) continue;
-    const [sha = "", parents = "", decorations = "", subject = "", author = "", date = ""] = record.split("\0");
-    if (!sha) continue;
-    commits.push({
-      sha,
-      shortSha: sha.slice(0, 7),
-      parents: parents ? parents.split(" ") : [],
-      refs: parseDecorations(decorations),
-      subject,
-      author,
-      date,
-    });
-  }
-  return commits;
-}
-
-/** `%D` with `--decorate=full`: "HEAD -> refs/heads/main, refs/remotes/origin/main, tag: refs/tags/v1". */
-export function parseDecorations(decorations: string): Array<GraphRef> {
-  const refs: Array<GraphRef> = [];
-  for (const part of decorations.split(", ")) {
-    if (!part) continue;
-    let name = part;
-    if (name.startsWith("HEAD -> ")) {
-      refs.push({ kind: "head", name: "HEAD" });
-      name = name.slice("HEAD -> ".length);
-    } else if (name === "HEAD") {
-      refs.push({ kind: "head", name: "HEAD" });
-      continue;
-    }
-    if (name.startsWith("tag: ")) name = name.slice("tag: ".length);
-    if (name.startsWith("refs/heads/")) {
-      refs.push({ kind: "branch", name: name.slice("refs/heads/".length) });
-    } else if (name.startsWith("refs/remotes/")) {
-      if (name.endsWith("/HEAD")) continue; // origin/HEAD symref is noise
-      refs.push({ kind: "remote", name: name.slice("refs/remotes/".length) });
-    } else if (name.startsWith("refs/tags/")) {
-      refs.push({ kind: "tag", name: name.slice("refs/tags/".length) });
-    }
-  }
-  return refs;
-}
-
-/** Same heuristic git uses: a NUL byte in the first 8000 bytes means binary. */
-function looksBinary(content: string | null): boolean {
-  return content !== null && content.slice(0, 8000).includes("\0");
-}
-
-function lineCount(content: string | null): number {
-  if (!content) return 0;
-  const n = content.split("\n").length;
-  return content.endsWith("\n") ? n - 1 : n;
-}
-
 const NO_BLOB = { content: null, tooLarge: false } as const;
-
-// ---------------------------------------------------------------------------
-// Uncommitted state
-// ---------------------------------------------------------------------------
-
-/** One end of a comparison: a commit, the index, or the working tree. */
-export type Side = { readonly kind: "commit"; readonly sha: string } | { readonly kind: "index" } | { readonly kind: "worktree" };
-
-export const sideOf = (rev: string): Side =>
-  rev === WORKTREE ? { kind: "worktree" } : rev === INDEX ? { kind: "index" } : { kind: "commit", sha: rev };
-
-const LEVEL = { commit: 0, index: 1, worktree: 2 } as const;
-
-/**
- * The revision arguments for `git diff` that compare `base` → `head`, or null
- * when both are the same uncommitted state (nothing to compare). git can only
- * diff "older" → "newer" (commit → index → working tree), so a swapped pair
- * uses `-R`.
- */
-export function diffRange(base: Side, head: Side): ReadonlyArray<string> | null {
-  if (base.kind === "commit" && head.kind === "commit") return [base.sha, head.sha];
-  if (base.kind === head.kind) return null;
-  const reversed = LEVEL[base.kind] > LEVEL[head.kind];
-  const [lo, hi] = reversed ? [head, base] : [base, head];
-  const flags = reversed ? ["-R"] : [];
-  if (lo.kind === "commit") return hi.kind === "index" ? [...flags, "--cached", lo.sha] : [...flags, lo.sha];
-  return flags; // index → working tree: plain `git diff`
-}
-
-/** A normalized path relative to the repository root, as git prints it: no `..`, `.`, empty or absolute parts. */
-export const isRepoPath = (path: string): boolean =>
-  path !== "" &&
-  path.length <= 4096 &&
-  !path.startsWith("/") &&
-  !/[\x00]/.test(path) &&
-  path.split("/").every((s) => s !== "" && s !== "." && s !== "..");
 
 export interface DiskFile {
   readonly content: string | null;
@@ -807,21 +643,6 @@ export async function readDisk(root: string, path: string): Promise<DiskFile> {
   }
 }
 
-/** A unified diff adding (or deleting) a whole file, as `git diff` would print it for a new file. */
-export function untrackedPatch(path: string, content: string | null, mode: string, kind: "added" | "deleted"): string {
-  const added = kind === "added";
-  let patch = `diff --git a/${path} b/${path}\n${added ? "new" : "deleted"} file mode ${mode}\n`;
-  if (content === null || content === "") return patch;
-  if (looksBinary(content)) {
-    return patch + (added ? `Binary files /dev/null and b/${path} differ\n` : `Binary files a/${path} and /dev/null differ\n`);
-  }
-  const lines = content.split("\n");
-  const endsWithNewline = content.endsWith("\n");
-  if (endsWithNewline) lines.pop();
-  const span = lines.length === 1 ? "1" : `1,${lines.length}`;
-  patch += added ? `--- /dev/null\n+++ b/${path}\n@@ -0,0 +${span} @@\n` : `--- a/${path}\n+++ /dev/null\n@@ -${span} +0,0 @@\n`;
-  const sign = added ? "+" : "-";
-  patch += lines.map((l) => sign + l).join("\n") + "\n";
-  if (!endsWithNewline) patch += "\\ No newline at end of file\n";
-  return patch;
-}
+// The parsers moved to @/shared/gitText (the Herdr mod uses them too); re-exported for existing importers.
+export { diffRange, isRepoPath, OBJECT_ID, parseDecorations, parseGraphLog, parseNameStatus, parseNumstat, sideOf, untrackedPatch } from "@/shared/gitText";
+export type { NumstatEntry, Side } from "@/shared/gitText";

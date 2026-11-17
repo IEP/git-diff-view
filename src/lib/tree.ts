@@ -37,7 +37,30 @@ interface MutableDir {
   files: Array<FileNode>;
 }
 
-const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+/**
+ * Natural, case-insensitive order ("file2" before "file10"). The Herdr mod's runtime has
+ * no Intl, so it falls back to a hand-rolled compare with the same intent.
+ */
+const collator: { compare(a: string, b: string): number } =
+  typeof Intl !== "undefined" ? new Intl.Collator(undefined, { numeric: true, sensitivity: "base" }) : { compare: naturalCompare };
+
+export function naturalCompare(a: string, b: string): number {
+  const chunks = (s: string) => s.toLowerCase().match(/\d+|\D+/g) ?? [];
+  const x = chunks(a);
+  const y = chunks(b);
+  for (let i = 0; i < Math.min(x.length, y.length); i++) {
+    const p = x[i]!;
+    const q = y[i]!;
+    if (p === q) continue;
+    const digits = /^\d/.test(p) && /^\d/.test(q);
+    if (digits) {
+      const d = Number(p) - Number(q);
+      if (d !== 0) return d;
+    }
+    return p < q ? -1 : 1;
+  }
+  return x.length - y.length;
+}
 
 /**
  * Build a directory tree from a flat list of changed files.

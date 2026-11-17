@@ -114,11 +114,20 @@ For more information, read the Bun API docs in `node_modules/bun-types/docs/**.m
 - `/api/search` (`src/server/DiffIndex.ts`) takes only `base`, `head`, `q`, never a path; its text comes from `Git.patch`. The SQLite index is `:memory:` only: never give it a file path.
 - When testing a bind locally, use an unused port. Old `git-diff-view` binaries often sit on 127.0.0.1:3917/3918, and macOS lets a `0.0.0.0` listener share the port, so loopback-resolved names hit the old process.
 
+## Herdr mod (`herdr/`)
+
+- `herdr/git-diff/` is the mod (plain JS on Herdr's gpui-kit), linked into `~/.config/herdr-app/mods/git-diff` by `bun run install:herdr`. `core.js` there is generated from `herdr/src/core.ts` (`bun run build:herdr`) and gitignored, as are the `gpui-kit.d.ts` / `jsconfig.json` Herdr writes into the folder.
+- Herdr's watcher sees the link, not the repo files behind it: after editing, run `bun run build:herdr` (it touches the link) or `touch -h ~/.config/herdr-app/mods/git-diff`, or keep `bun run build:herdr --watch` running. Otherwise the window keeps running the old code while `herdr-app check` passes on the new.
+- The mod runtime has no `Intl`, `TextEncoder` / `TextDecoder`, Node or DOM. Anything bundled into `core.js` (`herdr/src`, `src/lib`, `src/shared/gitText.ts`) must stay free of them; `src/shared/gitText.ts` is also used by the server, so keep it pure.
+- Virtual-list rows (`v_virtual_list` render callbacks) can't register handlers (`on_click`, `on_mouse_*`, `tooltip`): use the list's `on_item_click(key)`. The commit graph draws its own window of rows for that reason (drag, shift-click).
+- Same read-only rules as the server: every git call goes through `READ_ONLY` in `herdr/src/repo.ts`; working-tree reads stay gated on `git ls-files` plus `isRepoPath`.
+- Test in the running window: open a test tab with `herdr-app do tab.new --name "Diff (test)" --mod git-diff --props '{"folder":"<repo>"}'`, drive it with `herdr-app do git-diff.<command>`, `herdr-app shot`, then switch back and close the tab.
+
 ## Commit flow
 
 When asked to commit / push:
 
-1. Verify first: `bunx tsc --noEmit -p .`, `bun test`, and `bun run build` if `src/` or `build.ts` changed. Don't commit on failures.
+1. Verify first: `bunx tsc --noEmit -p .`, `bun test`, and `bun run build` if `src/` or `build.ts` changed; `bun run build:herdr` and `herdr-app check herdr/git-diff` if `herdr/`, `src/lib` or `src/shared` changed. Don't commit on failures.
 2. Update `README.md` (usage, Layout section) and this file when behavior, flags or files change.
 3. Stage files by name (no `git add -A`); leave `dist/` and stray files out.
 4. Message: imperative subject that says what the user gets (e.g. "Allow opening the viewer from other machines"), blank line, a body wrapped at ~72 cols explaining what changed and why, then the `Co-Authored-By:` trailer.

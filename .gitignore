@@ -32,3 +32,8 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# Herdr mod: bundled core (bun run build:herdr) and the type files Herdr writes into the mod folder
+herdr/git-diff/core.js
+herdr/git-diff/gpui-kit.d.ts
+herdr/git-diff/jsconfig.json

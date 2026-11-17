@@ -71,6 +71,34 @@ The search panel replaces the file tree and looks for a literal, case-insensitiv
 
 On the first search of a comparison the server reads it as one `git diff -U0` and indexes every changed line into an **in-memory** SQLite FTS5 table with the trigram tokenizer, so any 3+ character substring is an index lookup (shorter queries scan). Nothing is written to disk. The last 3 comparisons stay indexed. Two commit ids are indexed once; a comparison involving the working tree or the index re-reads the diff on each search and rebuilds only if it changed. Above 200,000 changed lines, files that don't fit are left out of the search; this is decided from `git diff --numstat` before any patch text is read, and the panel says the search is partial. Lines are indexed up to 2,000 characters.
 
+## Inside Herdr
+
+The same viewer runs natively in [Herdr](https://herdr.dev) as a mod, in a tab next to your terminals: no server, no browser. It has the commit graph with A / B handles, the Base / Head pickers (working tree and index included), pull requests, the file tree and filter, unified or side-by-side diffs with expandable context, wrap, F7 navigation, search over the changed lines, and live updates.
+
+```bash
+bun run install:herdr        # builds herdr/git-diff/core.js and links ~/.config/herdr-app/mods/git-diff here
+```
+
+Open it with the command `mod.open:git-diff` (`herdr-app do mod.open --name git-diff`), best bound to a key in `~/.config/herdr-app/keys.json` (editing that file makes all of it yours, so Herdr stops updating its default shortcuts):
+
+```json
+"global": { "cmd-shift-g": "mod.open:git-diff" },
+"mod:git-diff": { "cmd-shift-f": "git-diff.search", "f7": "git-diff.next-file", "shift-f7": "git-diff.prev-file" }
+```
+
+It opens a tab **Diff · <repo>** for the focused terminal's repository, on that terminal's machine too: a space on another machine runs git there through Herdr. The tab remembers its comparison. Commands for keys: `git-diff.next-file`, `prev-file`, `search`, `graph`, `split`, `unified`, `wrap`, `reload`, `pick-base`, `pick-head`, `pick-pr`.
+
+Differences from the web app, from what Herdr's mod runtime allows:
+- No syntax highlighting.
+- Search scans the changed lines in memory (no SQLite there); same literal, case-insensitive matching and 200,000-line limit.
+- Long lines scroll sideways with the trackpad or Shift+wheel, both sides of a split row together.
+- Local repositories refresh when files change (Herdr's folder watch, plus every 10 s); other machines every 3 s.
+- "Open on GitHub" for a pull request is the one thing that opens a browser.
+
+Pull requests and spaces on other machines use the same code paths as the rest, but haven't been tried inside Herdr yet.
+
+The mod is plain JavaScript in `herdr/git-diff/`; its git, diff, search, tree and graph code is TypeScript in `herdr/src/` plus the shared `src/lib/` and `src/shared/gitText.ts`, bundled into `core.js`. While working on it, `bun run build:herdr --watch` rebuilds and makes Herdr reload the mod on every save.
+
 ## GitHub pull requests
 
 If the `upstream` or `origin` remote points at github.com, a **Pull requests** picker appears in the header. It lists open PRs through the GitHub CLI, so [`gh`](https://cli.github.com) must be installed and logged in (`gh auth login`); private repositories work too.
@@ -98,9 +126,15 @@ src/server/DiffIndex.ts  Diff search: -U0 patch parser, in-memory SQLite FTS5 (t
 src/server/GitHub.ts     GitHub service: remote detection, PR list / resolve via `gh`
 src/server/Api.ts        HttpRouter routes, schema-validated query params
 src/shared/api.ts        Wire types shared by server and client
+src/shared/gitText.ts    Pure git-output parsers (name-status, numstat, log, -U0 patch, remotes), shared with the Herdr mod
 src/lib/tree.ts          Changed files → compacted directory tree
 src/lib/graph.ts         Commit graph lane layout, A..B range
 src/components/          RefPicker, PullPicker, CommitGraph, FileTree, DiffSearch, DiffPane
+herdr/build.ts           Bundles herdr/src → herdr/git-diff/core.js; --install links the mod, --watch reloads it
+herdr/src/repo.ts        The mod's git layer: Git + GitHub services as plain async over Herdr's exec / readTextFile
+herdr/src/diffModel.ts   One file's diff as rows: hunks, expandable gaps, unified / side-by-side pairs
+herdr/src/search.ts      Search over a -U0 patch's changed lines, in memory
+herdr/git-diff/          The Herdr mod (gpui-kit JS): main.js (state, launcher), graph, tree, diff, search, picker, ui
 ```
 
 Tests: `bun test`
