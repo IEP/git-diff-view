@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   ApiErrorBody,
   CompareResponse,
@@ -75,4 +75,31 @@ export function useAsync<T>(
   }, deps);
 
   return state;
+}
+
+/**
+ * `useAsync` for data that is re-read under the same `key` (polling, reload):
+ * - the last result for `key` stays on screen while the next one loads;
+ * - a reload that returns equal data keeps the old object, so nothing re-renders;
+ * - right after `key` changes, the previous key's result is never shown (`useAsync`
+ *   still holds it for one render), so callers see `data: null` and a loader.
+ */
+export function useHeldAsync<T>(
+  key: string,
+  load: ((signal: AbortSignal) => Promise<T>) | null,
+  deps: ReadonlyArray<unknown>,
+): { readonly state: AsyncState<unknown>; readonly data: T | null } {
+  const state = useAsync(
+    load ? (s) => load(s).then((data) => ({ key, data, json: JSON.stringify(data) })) : null,
+    deps,
+  );
+  const held = useRef<{ key: string; data: T; json: string } | null>(null);
+  const seen = useRef<unknown>(null);
+  if (state.status === "success" && state.data !== seen.current) {
+    seen.current = state.data;
+    const h = held.current;
+    if (!h || h.key !== state.data.key || h.json !== state.data.json) held.current = state.data;
+  }
+  const data = state.status !== "error" && held.current?.key === key ? held.current.data : null;
+  return { state, data };
 }

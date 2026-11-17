@@ -4,8 +4,7 @@ import { ArrowRightIcon, ChevronDownIcon, ChevronUpIcon, CopyIcon, FileWarningIc
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useRef } from "react";
-import { api, useAsync } from "@/lib/api";
+import { api, useHeldAsync } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { FileChange, FileDiffResponse } from "@/shared/api";
 import { STATUS_STYLE } from "./FileTree";
@@ -20,21 +19,17 @@ interface DiffPaneProps {
   readonly position: { readonly index: number; readonly total: number };
   readonly onPrev: () => void;
   readonly onNext: () => void;
-  /** Bumped to re-read the diff (uncommitted state changes without its "SHA" changing). */
+  /** Bumped to re-read the diff (a branch or the working tree changes under the same name). */
   readonly reload?: number;
 }
 
 export function DiffPane({ baseSha, headSha, file, mode, wrap, theme, position, onPrev, onNext, reload = 0 }: DiffPaneProps) {
-  // Each result carries the key it was fetched for: right after a change, `state` still holds the old one.
-  const key = `${baseSha}:${headSha}:${file?.oldPath}:${file?.path}`;
-  const state = useAsync(
-    file ? (signal) => api.file(baseSha, headSha, file.path, file.oldPath, signal).then((data) => ({ key, data })) : null,
+  // A reload of the same file keeps the old diff up until the new one arrives.
+  const { state, data: shown } = useHeldAsync(
+    `${baseSha}:${headSha}:${file?.oldPath}:${file?.path}`,
+    file ? (signal) => api.file(baseSha, headSha, file.path, file.oldPath, signal) : null,
     [baseSha, headSha, file?.path, file?.oldPath, reload],
   );
-  // A reload of the same file keeps the old diff up until the new one arrives.
-  const last = useRef<{ key: string; data: FileDiffResponse } | null>(null);
-  if (state.status === "success") last.current = state.data;
-  const shown = last.current?.key === key ? last.current.data : null;
 
   if (!file) {
     return <Centered>Select a file in the tree to see its diff.</Centered>;

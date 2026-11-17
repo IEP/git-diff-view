@@ -50,8 +50,11 @@ interface CommitGraphProps {
   /** Commits the current comparison resolved to, shown as the A and B handles. */
   readonly baseSha: string | null;
   readonly headSha: string | null;
-  /** Compare commit `base` (A) with commit `head` (B). */
-  readonly onCompare: (base: string, head: string) => void;
+  /**
+   * Compare commit `base` (A) with commit `head` (B). `pin` asks to keep these exact
+   * commits (viewing one commit); otherwise a branch name may stand in for a tip.
+   */
+  readonly onCompare: (base: string, head: string, pin?: boolean) => void;
   readonly onLoadMore: () => void;
   /** Hide the whole graph panel. */
   readonly onHide: () => void;
@@ -184,7 +187,7 @@ export function CommitGraph({ graph, baseSha, headSha, onCompare, onLoadMore, on
       return;
     }
     setNotice(null);
-    onCompare(parent, c.sha);
+    onCompare(parent, c.sha, true);
   };
 
   /** Range from the anchor to `c`; whichever sits lower in the list (older) is A. */

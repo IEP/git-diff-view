@@ -39,20 +39,26 @@ The API still rejects requests whose `Host` isn't one of this machine's own addr
 
 The binary runs in production mode (no HMR) and needs only `git` (plus `gh` for pull requests) on the machine. Rebuild after changing the source.
 
-Then open the printed URL. The URL keeps `?base=…&head=…&file=…`, so you can bookmark or share it.
+Then open the printed URL. It opens on `main` (or `master`, …) → **Working tree**: everything on your branch, committed or not. The URL keeps `?base=…&head=…&file=…`, so you can bookmark or share it.
 
 ## Using it
 
 | Action | How |
 |---|---|
 | Pick revisions | Base / Head pickers: search branches, remotes, tags and commits, or type any revision |
-| Uncommitted changes | Pick **Working tree** (files on disk, including untracked) or **Staged (index)** under *Local changes* in either picker. `HEAD → Working tree` is everything not yet committed, `HEAD → Staged` is the next commit, `Staged → Working tree` is what `git add` hasn't picked up. The ↻ button next to the pickers re-reads them; so does switching back to the tab |
-| Pick from the graph | Commit graph panel above the diff: **click** a commit to view it alone, **drag** the **A** / **B** handles in the left gutter to move either end (the list auto-scrolls near its edges, Esc cancels), or **Shift-click** to select a range. Commits whose changes are in the diff are tinted. Right-click or the A / B / Enter keys work too |
+| Uncommitted changes | Pick **Working tree** (files on disk, including untracked) or **Staged (index)** under *Local changes* in either picker. `HEAD → Working tree` is everything not yet committed, `HEAD → Staged` is the next commit, `Staged → Working tree` is what `git add` hasn't picked up. See *Live updates* below |
+| Pick from the graph | Commit graph panel above the diff: **click** a commit to view it alone (pinned to that commit), **drag** the **A** / **B** handles in the left gutter to move either end (the list auto-scrolls near its edges, Esc cancels), or **Shift-click** to select a range. Commits whose changes are in the diff are tinted. Right-click or the A / B / Enter keys work too |
 | Show / hide the graph | **Graph** button in the header, or the hide button at the right of the graph's bar |
 | Navigate tree | ↑ ↓ to move, ← → to collapse/expand, Enter to toggle, Home/End |
 | Next / previous file | F7 / Shift+F7, or the arrows in the diff header |
 | Filter | Box above the tree (Esc to clear, ↓ to jump into the tree) |
 | Layout | Side-by-side or unified, line wrap, light/dark theme |
+
+A handle dropped on a branch tip picks the branch by name, not its commit id: the current branch first, then another local branch, `HEAD`, a remote branch or a tag.
+
+### Live updates
+
+A comparison that names something movable (a branch, `HEAD`, the working tree or the index) re-reads itself every 2 seconds while the tab is visible, and right away when you come back to it, so edits and new commits from an editor or an agent show up on their own. The next read starts only after the previous one finished. Unchanged results don't re-render, so scroll position and expanded context stay put. ↻ next to the pickers reloads at once. Comparisons of fixed commit ids (a pull request, a clicked commit) never change and aren't polled.
 
 Comparison is a direct two-point diff (`git diff A B`), like IntelliJ's "Compare with…". In the URL the working tree is `:worktree` and the index `:index` (a ref name can't contain `:`), e.g. `?base=HEAD&head=:worktree`; these map to `git diff [--cached] [-R] <commit>`. Untracked files come from `git ls-files --others --exclude-standard` and show as added.
 

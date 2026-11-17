@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowLeftRightIcon,
   Columns2Icon,
@@ -23,9 +23,9 @@ import { Separator } from "@/components/ui/separator";
 import { Toggle } from "@/components/ui/toggle";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { api, useAsync } from "@/lib/api";
+import { api, useAsync, useHeldAsync } from "@/lib/api";
 import { buildTree, filesInTreeOrder } from "@/lib/tree";
-import { isPseudoRev, type CompareResponse, type RefsResponse, type RepoInfo } from "@/shared/api";
+import { WORKTREE, type CompareResponse, type GraphResponse, type RefsResponse, type RepoInfo } from "@/shared/api";
 import "./index.css";
 
 // ---------------------------------------------------------------------------
@@ -79,17 +79,21 @@ function usePref<T extends string>(key: string, initial: T): [T, (v: T) => void]
   return [value, set];
 }
 
-/** Pick sensible defaults: compare the current branch against main/master, else against its parent commit. */
+/**
+ * Pick sensible defaults: the working tree (everything on this branch, committed or
+ * not) against main/master, else against the current commit's parent.
+ */
 function defaultRefs(repo: RepoInfo, refs: RefsResponse): { base: string; head: string } {
-  const head = repo.currentBranch ?? "HEAD";
+  const current = repo.currentBranch ?? "HEAD";
+  const head = WORKTREE;
   const candidates = ["main", "master", "develop", "trunk"];
-  const local = candidates.find((c) => c !== head && refs.branches.some((b) => b.name === c));
+  const local = candidates.find((c) => c !== current && refs.branches.some((b) => b.name === c));
   if (local) return { base: local, head };
   const remote = candidates
     .map((c) => `origin/${c}`)
     .find((c) => refs.remoteBranches.some((b) => b.name === c) && refs.remoteBranches.find((b) => b.name === c)?.sha !== repo.headSha);
   if (remote) return { base: remote, head };
-  return { base: refs.commits.length > 1 ? `${head}~1` : head, head };
+  return { base: refs.commits.length > 1 ? `${current}~1` : current, head };
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +101,8 @@ function defaultRefs(repo: RepoInfo, refs: RefsResponse): { base: string; head: 
 // ---------------------------------------------------------------------------
 
 const GRAPH_PAGE = 500;
+const POLL_MS = 2000;
+const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 export function App() {
   const initial = useMemo(readUrl, []);
@@ -127,10 +133,19 @@ export function App() {
     document.documentElement.classList.toggle("dark", theme === "dark");
   }, [theme]);
 
-  const repo = useAsync((s) => api.repo(s), []);
-  const refs = useAsync((s) => api.refs(s), []);
-  const repoData = repo.status === "success" ? repo.data : null;
-  const refsData = refs.status === "success" ? refs.data : null;
+  // Branch names, HEAD and the working tree move while the page is open (an editor or an
+  // agent at work), so such comparisons re-read themselves; fixed commit ids never change.
+  const live = !!base && !!head && ![base, head].every((r) => COMMIT_ID.test(r));
+  const [tick, setTick] = useState(0);
+
+  const repoQ = useHeldAsync("repo", (s) => api.repo(s), [tick]);
+  const repoData = repoQ.data;
+  const repo = repoQ.state;
+  // New commits: refresh the pickers and the graph too.
+  const headSha = repoData?.headSha ?? null;
+  const refsQ = useHeldAsync("refs", (s) => api.refs(s), [headSha]);
+  const refsData = refsQ.data;
+  const refs = refsQ.state;
 
   // GitHub pull requests: the list is only shown when a remote points at github.com.
   const pulls = useAsync((s) => api.pulls(s), []);
@@ -154,35 +169,72 @@ export function App() {
     // `pr` is a dependency so leaving PR mode (e.g. after a failed load) fills any still-empty side.
   }, [repoData, refsData, pr]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Uncommitted state changes under the same name, so it can be re-read on demand.
-  const live = isPseudoRev(base) || isPseudoRev(head);
-  const [reload, setReload] = useState(0);
-  // Each result carries the pair it was fetched for: right after a pick, `compare` still holds the old one.
-  const pairKey = `${base}..${head}`;
-  const compare = useAsync(
-    base && head ? (s) => api.compare(base, head, s).then((data) => ({ key: pairKey, data })) : null,
-    [base, head, reload],
+  // While re-reading the same pair, the last result stays on screen instead of a spinner.
+  const { state: compare, data: compareData } = useHeldAsync<CompareResponse>(
+    `${base}..${head}`,
+    base && head ? (s) => api.compare(base, head, s) : null,
+    [base, head, tick],
   );
-  // While re-reading the same pair, keep the last result on screen instead of a spinner.
-  const lastCompare = useRef<{ key: string; data: CompareResponse } | null>(null);
-  if (compare.status === "success") lastCompare.current = compare.data;
-  const compareData = compare.status !== "error" && lastCompare.current?.key === pairKey ? lastCompare.current.data : null;
+
+  // Poll: the next read is scheduled once the last one finished, so a slow repo is never cancelled
+  // mid-read. Only while the tab is visible; coming back to it reads at once.
+  useEffect(() => {
+    if (!live || compare.status === "loading") return;
+    const t = setTimeout(() => {
+      if (document.visibilityState === "visible") setTick((n) => n + 1);
+    }, POLL_MS);
+    return () => clearTimeout(t);
+  }, [live, compare]);
+  useEffect(() => {
+    if (!live) return;
+    const onVisible = () => document.visibilityState === "visible" && setTick((n) => n + 1);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [live]);
 
   // Commit graph. "Load more" raises the limit; the graph keeps the old page on screen meanwhile.
   const [graphLimit, setGraphLimit] = useState(GRAPH_PAGE);
-  const graph = useAsync(showGraph === "on" ? (s) => api.graph(graphLimit, s) : null, [graphLimit, showGraph]);
+  const graph = useAsync(showGraph === "on" ? (s) => api.graph(graphLimit, s) : null, [graphLimit, showGraph, headSha]);
   // A / B markers. Held across compare reloads (and set optimistically on a pick) so they don't blink.
   const [marked, setMarked] = useState<{ base: string | null; head: string | null }>({ base: null, head: null });
   useEffect(() => {
     if (compareData) setMarked({ base: compareData.base.sha, head: compareData.head.sha });
   }, [compareData]);
-  const compareCommits = useCallback(
-    (a: string, b: string) => {
-      setMarked({ base: a, head: b });
-      chooseBase(a);
-      chooseHead(b);
+  // The last loaded graph, kept while it reloads after new commits.
+  const [graphData, setGraphData] = useState<GraphResponse | null>(null);
+  useEffect(() => {
+    if (graph.status === "success") setGraphData(graph.data);
+  }, [graph]);
+
+  /**
+   * A graph pick on a branch tip becomes the branch name, so the comparison follows new
+   * commits instead of pinning that one: current branch, another local branch, HEAD,
+   * a remote branch, a tag, and only then the commit id.
+   */
+  const nameFor = useCallback(
+    (sha: string) => {
+      const refs = graphData?.commits.find((c) => c.sha === sha)?.refs ?? [];
+      const branches = refs.filter((r) => r.kind === "branch").map((r) => r.name);
+      const current = repoData?.currentBranch;
+      if (current && branches.includes(current)) return current;
+      return (
+        branches[0] ??
+        (refs.some((r) => r.kind === "head") ? "HEAD" : undefined) ??
+        refs.find((r) => r.kind === "remote")?.name ??
+        refs.find((r) => r.kind === "tag")?.name ??
+        sha
+      );
     },
-    [chooseBase, chooseHead],
+    [graphData, repoData?.currentBranch],
+  );
+
+  const compareCommits = useCallback(
+    (a: string, b: string, pin?: boolean) => {
+      setMarked({ base: a, head: b });
+      chooseBase(pin ? a : nameFor(a));
+      chooseHead(pin ? b : nameFor(b));
+    },
+    [chooseBase, chooseHead, nameFor],
   );
 
   // Files in the order they appear in the tree, for next / previous navigation.
@@ -205,14 +257,6 @@ export function App() {
     },
     [ordered, selectedIndex],
   );
-
-  // Coming back from the editor: re-read the working tree / index.
-  useEffect(() => {
-    if (!live) return;
-    const onFocus = () => setReload((n) => n + 1);
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
-  }, [live]);
 
   // IntelliJ's F7 / Shift+F7 for next / previous change.
   useEffect(() => {
@@ -264,7 +308,7 @@ export function App() {
           position={{ index: selectedIndex, total: ordered.length }}
           onPrev={() => go(-1)}
           onNext={() => go(1)}
-          reload={reload}
+          reload={tick}
         />
       </ResizablePanel>
     </ResizablePanelGroup>
@@ -342,16 +386,16 @@ export function App() {
                     variant="ghost"
                     size="icon"
                     className="size-8"
-                    aria-label="Reload uncommitted changes"
-                    onClick={() => setReload((n) => n + 1)}
+                    aria-label="Reload now"
+                    onClick={() => setTick((n) => n + 1)}
                   >
-                    <RefreshCwIcon className={compare.status === "loading" ? "size-4 animate-spin" : "size-4"} />
+                    <RefreshCwIcon className={compare.status === "loading" && !compareData ? "size-4 animate-spin" : "size-4"} />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>Reload uncommitted changes (also on returning to this tab)</TooltipContent>
+                <TooltipContent>Updates every few seconds while this tab is open. Click to reload now</TooltipContent>
               </Tooltip>
             )}
-            {compare.status === "loading" && !live && <Loader2Icon className="text-muted-foreground size-4 animate-spin" />}
+            {compare.status === "loading" && !compareData && !live && <Loader2Icon className="text-muted-foreground size-4 animate-spin" />}
           </div>
 
           <div className="ml-auto flex items-center gap-1">
