@@ -17,7 +17,7 @@ function rowsOf(view) {
   const root = buildTree(shown);
   // A filter opens every folder, so matches are never hidden.
   const rows = visibleRows(root, q ? new Set() : view.tree.collapsed);
-  view.treeCache = { key, files, collapsedVersion: view.tree.collapsedVersion, root, rows, count: shown.length };
+  view.treeCache = { key, files, collapsedVersion: view.tree.collapsedVersion, root, rows, shown, count: shown.length };
   return view.treeCache;
 }
 
@@ -83,8 +83,9 @@ export function renderTree(view, t) {
   const data = rowsOf(view);
   const { rows } = data;
   const total = view.compare.files.length;
-  const add = view.compare.files.reduce((n, f) => n + f.additions, 0);
-  const del = view.compare.files.reduce((n, f) => n + f.deletions, 0);
+  // Totals follow the filter, as on the web.
+  const add = data.shown.reduce((n, f) => n + f.additions, 0);
+  const del = data.shown.reduce((n, f) => n + f.deletions, 0);
 
   // F7 / a search hit picked a file: open its folders and bring it into view.
   if (view.revealInTree) {

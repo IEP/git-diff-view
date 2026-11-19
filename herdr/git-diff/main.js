@@ -14,7 +14,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, VirtualListScrollHandle } from "gpui-base";
 import { checking, closeOverlay, exec, focused, nextCommand, notify, panes, props, readTextFile, run, spaces, theme, watchFolder } from "herdr";
-import { buildIndex, defaultRefs, expand, filesInTreeOrder, buildTree, isPseudoRev, OBJECT_ID, openRepo, parseFilePatch, search, splitLines, splitRows, unifiedRows, WORKTREE } from "./core.js";
+import { buildIndex, defaultRefs, expand, filesInTreeOrder, buildTree, isPseudoRev, OBJECT_ID, openRepo, parseFilePatch, search, splitLines, splitRows, unifiedRows, inlineMarks, WORKTREE } from "./core.js";
 import { button, icon, separator } from "./ui.js";
 import { renderGraph, graphKeys, graphRows, finishDrag } from "./graph.js";
 import { renderTree, treeKeys } from "./tree.js";
@@ -260,6 +260,15 @@ export default class GitDiff extends View {
     return this.compare?.files.find((f) => f.path === this.selected) ?? null;
   }
 
+  /**
+   * The layout the selected file is drawn in. A new (or deleted) file has only one
+   * side, so side by side would leave half the pane empty: it gets one column, as on the web.
+   */
+  layout() {
+    const status = this.selectedFile()?.status;
+    return status === "added" || status === "deleted" ? "unified" : this.mode;
+  }
+
   async loadFile(cx, { quiet = false } = {}) {
     const f = this.selectedFile();
     const cmp = this.compare;
@@ -352,7 +361,12 @@ export default class GitDiff extends View {
           this.refs = await this.repo.refs();
           if (this.showGraph) this.loadGraph(cx);
         }
-        if (this.live() && !this.pr) await this.loadCompare(cx, { quiet: true });
+        if (this.live() && !this.pr) {
+          await this.loadCompare(cx, { quiet: true });
+          // Hits follow the text on disk, as the web view's do.
+          if (this.searchState.open && this.searchState.settled.trim()) this.runSearch(cx, { quiet: true });
+          else if (this.searchState.index) this.searchState.index.stale = true;
+        }
       } catch {
         /* the next tick tries again */
       } finally {
@@ -438,11 +452,12 @@ export default class GitDiff extends View {
     const f = this.file;
     if (!f) return null;
     const open = this.expanded.get(f.path) ?? new Map();
-    const key = `${f.key}|${this.mode}`;
+    const layout = this.layout();
+    const key = `${f.key}|${layout}`;
     if (this.rowsCache?.key === key && this.rowsCache.open === open && this.rowsCache.file === f) return this.rowsCache;
     const unified = unifiedRows(f.parsed, f.oldLines, f.newLines, open);
-    const rows = this.mode === "split" ? splitRows(unified) : unified;
-    this.rowsCache = { key, open, file: f, unified, rows };
+    const rows = layout === "split" ? splitRows(unified) : unified;
+    this.rowsCache = { key, open, file: f, unified, rows, marks: inlineMarks(unified) };
     return this.rowsCache;
   }
 
@@ -467,37 +482,63 @@ export default class GitDiff extends View {
     cx.notify();
   }
 
-  runSearch(cx) {
+  /**
+   * Search the comparison for the settled query. `quiet` is a re-run after a refresh:
+   * it re-reads the patch (a live comparison's text can change without its file list
+   * changing), rebuilds only if the text did, and keeps the highlighted hit.
+   */
+  runSearch(cx, { quiet = false } = {}) {
     const s = this.searchState;
-    const query = s.settled;
     const cmp = this.compare;
-    if (!query.trim() || !cmp) {
-      s.result = null;
+    if (!s.settled.trim() || !cmp) {
+      if (!quiet) s.result = null;
       cx.notify();
       return;
     }
-    const key = `${cmp.base.sha}..${cmp.head.sha}|${this.compareSig?.length}`;
-    if (s.index?.key === key && !(this.live() && s.index.sig !== this.compareSig)) {
+    const key = `${cmp.base.sha}..${cmp.head.sha}`;
+    // Shows the query as it is now: typing may have moved on while the patch was read.
+    const show = (keepCursor) => {
+      const query = s.settled;
+      if (!query.trim()) return;
+      const before = s.result?.hits[s.cursor];
       s.result = search(s.index.index, query);
-      s.cursor = 0;
+      const at = keepCursor && before ? s.result.hits.findIndex((h) => h.path === before.path && h.side === before.side && h.line === before.line) : -1;
+      s.cursor = at >= 0 ? at : keepCursor ? Math.min(s.cursor, Math.max(0, s.result.hits.length - 1)) : 0;
+    };
+    // Typing reuses the index; a refresh marks it stale when search isn't showing.
+    if (!quiet && s.index?.key === key && !s.index.stale) {
+      show(false);
       cx.notify();
       return;
     }
-    s.busy = true;
+    // One patch read at a time: a request meanwhile runs once the read is done
+    // (a typed query wins over a background re-run).
+    if (s.searching) {
+      s.rerun = { quiet: quiet && (s.rerun?.quiet ?? true) };
+      if (!quiet) s.busy = true;
+      cx.notify();
+      return;
+    }
+    s.searching = true;
+    if (!quiet) s.busy = true;
     cx.notify();
     cx.spawn(async (cx) => {
       try {
         const patch = await this.repo.patch(cmp.base.sha, cmp.head.sha, SEARCH_LINES);
-        s.index = { key, sig: this.compareSig, index: buildIndex(patch.patch, patch.partial) };
+        if (`${this.compare?.base.sha}..${this.compare?.head.sha}` !== key) return; // another comparison was picked: its rerun follows
+        const same = s.index?.key === key && s.index.patch === patch.patch;
+        if (same) s.index.stale = false;
+        else s.index = { key, patch: patch.patch, index: buildIndex(patch.patch, patch.partial) };
         s.error = null;
-        if (s.settled === query) {
-          s.result = search(s.index.index, query);
-          s.cursor = 0;
-        }
+        if (!(same && quiet)) show(quiet);
       } catch (e) {
-        s.error = String(e?.message ?? e);
+        if (!quiet) s.error = String(e?.message ?? e);
       } finally {
+        s.searching = false;
         s.busy = false;
+        const again = s.rerun;
+        s.rerun = null;
+        if (again) this.runSearch(cx, again);
         cx.notify();
       }
     });

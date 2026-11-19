@@ -2,7 +2,7 @@
 // unchanged context between hunks, optional wrapping, and search matches marked.
 import { div } from "gpui-kit";
 import { v_flex, h_flex, v_virtual_list, Scrollbar } from "gpui-base";
-import { findLine, findPair, splitMatches, untab } from "./core.js";
+import { findLine, findPair, segments, untab } from "./core.js";
 import { alpha, button, fill, icon, mono, statusStyle, safeRows } from "./ui.js";
 
 const LINE_H = 20;
@@ -18,6 +18,9 @@ export function renderDiff(view, t) {
     .id("diff")
     .size_full()
     .child(fileHeader(view, t, f))
+    .when(view.file?.path === f.path && Boolean(view.file.data.tooLarge) && !view.file.data.binary && view.file.parsed.hunks.length > 0, (e) => e.child(
+      div().flex_none().px(12).py(6).border_b(1).border_color(t.border).bg(alpha(t.ansi3, "1a")).text_size(12).text_color(t.muted)
+        .child("Large file: showing changed hunks only, without full-file context.")))
     .child(body(view, t, f));
 }
 
@@ -54,14 +57,19 @@ function body(view, t, f) {
   const file = view.file;
   if (!file || file.path !== f.path) return center(t, "Loading…");
   const d = file.data;
-  if (d.binary) return center(t, "Binary file · no text diff");
+  // Same wording as the web view's.
+  if (d.binary) return center(t, "Binary file changed. No text diff to show.");
   const built = view.rows();
   const rows = built.rows;
+  const marks = built.marks;
   if (!rows.length) {
-    const notes = file.parsed.notes;
-    return center(t, notes.length ? notes.join(" · ") : f.status === "renamed" ? "Renamed without changes" : "No text changes");
+    if (d.tooLarge) return center(t, "File too large to show.");
+    return center(t, f.status === "renamed" ? "File renamed without content changes."
+      : f.status === "copied" ? "File copied without content changes."
+      : d.patch.includes("old mode") ? "Only the file mode changed."
+      : "No content changes.");
   }
-  const split = view.mode === "split";
+  const split = view.layout() === "split";
   const highlight = view.searchState.open ? view.searchState.settled : "";
   const jump = view.pendingJump;
 
@@ -69,10 +77,14 @@ function body(view, t, f) {
   if (jump && jump.path === f.path) {
     const at = split ? findPair(rows, jump.side, jump.line) : findLine(rows, jump.side, jump.line);
     if (at >= 0) view.diffScroll.scroll_to_item(at, "center");
-    view.jumped = { ...jump, index: at };
+    view.jumped = jump;
     view.pendingJump = null;
   }
-  const jumpedIndex = view.jumped?.path === f.path ? view.jumped.index : -1;
+  // The hit's row is found by its line, not kept as an index: switching layout or
+  // opening a gap moves it.
+  const jumped = view.jumped?.path === f.path ? view.jumped : null;
+  if (jumped && (view.jumpedAt?.rows !== rows || view.jumpedAt.jump !== jumped)) view.jumpedAt = { rows, jump: jumped, index: split ? findPair(rows, jumped.side, jumped.line) : findLine(rows, jumped.side, jumped.line) };
+  const jumpedIndex = jumped ? view.jumpedAt.index : -1;
 
   // Text scrolls sideways inside each cell by one shared offset (wheel sideways or
   // Shift+wheel), so line numbers stay put and both halves of a split row move together.
@@ -100,7 +112,7 @@ function body(view, t, f) {
     const hl = i === jumpedIndex;
     if (r.t === "hunk") return hunkRow(t, r.text);
     if (r.t === "gap") return gapRow(view, t, r);
-    return split ? pairRow(view, t, r, highlight, hl, sizes[i]) : lineRow(view, t, r.line, highlight, hl, sizes[i]);
+    return split ? pairRow(view, t, r, highlight, hl, sizes[i], marks) : lineRow(view, t, r.line, highlight, hl, sizes[i], marks);
   };
 
   return div()
@@ -180,10 +192,23 @@ function lineColors(t, kind) {
   return { bg: null, num: null, sign: " ", signColor: t.dim };
 }
 
-function text(view, t, raw, highlight) {
+// Wrapping breaks only between elements: cut a segment into words, and long words into chunks.
+function pieces(p) {
+  return (p.text.match(/\S{1,40}\s*|\s+/g) ?? [p.text]).map((text) => ({ ...p, text }));
+}
+
+// Changed words get a stronger tint of the line's color; search matches stay yellow on top.
+function text(view, t, raw, highlight, changed, kind) {
   const s = untab(raw) || " ";
-  const parts = highlight ? splitMatches(s, highlight) : [s];
-  const content = parts.length === 1 ? s : h_flex().when(view.wrap, (e) => e.flex_wrap()).children(parts.map((p, i) => (i % 2 ? div().bg(alpha(t.ansi3, "66")).rounded(2).child(p) : div().whitespace_nowrap().child(p))));
+  const parts = segments(s, changed, highlight);
+  const word = kind === "add" ? alpha(t.ansi2, "4d") : alpha(t.ansi1, "4d");
+  const content = parts.length === 1 && !parts[0].changed && !parts[0].hit
+    ? s
+    : h_flex().when(view.wrap, (e) => e.flex_wrap()).children((view.wrap ? parts.flatMap(pieces) : parts).map((p) => {
+      const el = div().whitespace_nowrap().child(p.text);
+      if (p.hit) return el.bg(alpha(t.ansi3, "66")).rounded(2);
+      return p.changed ? el.bg(word) : el;
+    }));
   if (view.wrap) return div().flex_1().min_w(0).whitespace_normal().child(content);
   return div().flex_1().min_w(0).h_full().overflow_hidden().relative()
     .child(div().absolute().top(0).left(-(view.diffX ?? 0)).whitespace_nowrap().child(content));
@@ -193,7 +218,7 @@ function num(t, n, bg) {
   return div().w(NUM_W).flex_none().h_full().pr(8).text_right().text_color(t.dim).when(Boolean(bg), (e) => e.bg(bg)).child(n == null ? "" : String(n));
 }
 
-function lineRow(view, t, line, highlight, hl, h) {
+function lineRow(view, t, line, highlight, hl, h, marks) {
   const c = lineColors(t, line.kind);
   return h_flex()
     .w_full()
@@ -205,10 +230,10 @@ function lineRow(view, t, line, highlight, hl, h) {
     .child(num(t, line.old, c.num))
     .child(num(t, line.new, c.num))
     .child(div().w(16).flex_none().text_color(c.signColor).child(c.sign))
-    .child(text(view, t, line.text, highlight));
+    .child(text(view, t, line.text, highlight, line.kind === "ctx" ? undefined : marks.get(line.kind === "add" ? `add${line.new}` : `del${line.old}`), line.kind));
 }
 
-function half(view, t, side, highlight) {
+function half(view, t, side, highlight, marks) {
   if (!side) return h_flex().flex_1().min_w(0).h_full().bg(t.canvas).child(div().w(NUM_W).flex_none());
   const c = lineColors(t, side.kind);
   return h_flex()
@@ -219,17 +244,17 @@ function half(view, t, side, highlight) {
     .when(Boolean(c.bg), (e) => e.bg(c.bg))
     .child(num(t, side.n, c.num))
     .child(div().w(14).flex_none().text_color(c.signColor).child(c.sign))
-    .child(text(view, t, side.text, highlight));
+    .child(text(view, t, side.text, highlight, side.kind === "ctx" ? undefined : marks.get(`${side.kind}${side.n}`), side.kind));
 }
 
-function pairRow(view, t, r, highlight, hl, h) {
+function pairRow(view, t, r, highlight, hl, h, marks) {
   return h_flex()
     .w_full()
     .h(h)
     .flex_none()
     .items_stretch()
     .when(hl, (e) => e.border_1().border_color(t.accent))
-    .child(half(view, t, r.left, highlight))
+    .child(half(view, t, r.left, highlight, marks))
     .child(div().w(1).flex_none().bg(t.border))
-    .child(half(view, t, r.right, highlight));
+    .child(half(view, t, r.right, highlight, marks));
 }

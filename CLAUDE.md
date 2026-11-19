@@ -122,6 +122,7 @@ For more information, read the Bun API docs in `node_modules/bun-types/docs/**.m
 - The mod runtime has no `Intl`, `TextEncoder` / `TextDecoder`, Node or DOM. Anything bundled into `core.js` (`herdr/src`, `src/lib`, `src/shared/gitText.ts`) must stay free of them; `src/shared/gitText.ts` is also used by the server, so keep it pure.
 - Virtual-list rows (`v_virtual_list` render callbacks) can't register handlers (`on_click`, `on_mouse_*`, `tooltip`): use the list's `on_item_click(key)`. The commit graph draws its own window of rows for that reason (drag, shift-click).
 - Same read-only rules as the server: every git call goes through `READ_ONLY` in `herdr/src/repo.ts`; working-tree reads stay gated on `git ls-files` plus `isRepoPath`.
+- The web viewer is the reference for behaviour. `herdr/PARITY.md` lists where the mod still differs and why (e.g. no SQLite, so search scans lines); update it when closing or adding a gap.
 - Test in the running window: open a test tab with `herdr-app do tab.new --name "Diff (test)" --mod git-diff --props '{"folder":"<repo>"}'`, drive it with `herdr-app do git-diff.<command>`, `herdr-app shot`, then switch back and close the tab.
 
 ## Commit flow

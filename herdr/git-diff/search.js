@@ -3,7 +3,7 @@
 // click jump to the line; Esc clears, then closes.
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Input, v_virtual_list, Scrollbar } from "gpui-base";
-import { MAX_HITS, splitMatches } from "./core.js";
+import { splitMatches } from "./core.js";
 import { alpha, button, icon, mono, fill, safeRows } from "./ui.js";
 
 const ROW_H = 24;
@@ -16,14 +16,17 @@ function items(view) {
   if (s.items?.result === r) return s.items.list;
   const list = [];
   let path = null;
+  let group = null;
   r.hits.forEach((hit, i) => {
     if (hit.path !== path) {
       path = hit.path;
-      list.push({ kind: "file", path });
+      group = { kind: "file", path, count: 0 };
+      list.push(group);
     }
+    group.count++;
     list.push({ kind: "hit", hit, i });
   });
-  s.items = { result: r, list };
+  s.items = { result: r, list, files: list.filter((it) => it.kind === "file").length };
   return list;
 }
 
@@ -65,7 +68,13 @@ export function renderSearch(view, t) {
   let summary = "Type to search the added and removed lines";
   if (s.error) summary = s.error;
   else if (s.busy) summary = "Searching…";
-  else if (r) summary = r.total === 0 ? "No matches" : r.total > r.hits.length ? `First ${MAX_HITS} of ${r.total} matches` : `${r.total} match${r.total === 1 ? "" : "es"}`;
+  else if (r) {
+    // Same wording as the web view's.
+    const files = s.items?.files ?? 0;
+    summary = r.total === 0 ? "No matches"
+      : r.total > r.hits.length ? `${r.total} lines · first ${r.hits.length} shown`
+      : `${r.total} ${r.total === 1 ? "line" : "lines"} in ${files} ${files === 1 ? "file" : "files"}`;
+  }
   return v_flex()
     .id("search")
     .size_full()
@@ -77,7 +86,7 @@ export function renderSearch(view, t) {
     .when(Boolean(r?.partial), (e) => e.child(div().px(10).pb(5).text_size(11).text_color(t.ansi3).child("The comparison is too large to search completely; some files are left out.")))
     .child(div().flex_1().min_h(0).relative()
       .child(fill(v_virtual_list("search-hits", list.length, ROW_H, (i) => (list[i].kind === "file" ? `f:${list[i].path}` : `h:${list[i].i}`), safeRows((range) =>
-        list.slice(range.start, range.end).map((it) => (it.kind === "file" ? fileRow(t, it.path) : hitRow(view, t, it))))).track_scroll(s.scroll).on_item_click((key, cx) => {
+        list.slice(range.start, range.end).map((it) => (it.kind === "file" ? fileRow(t, it) : hitRow(view, t, it))))).track_scroll(s.scroll).on_item_click((key, cx) => {
         if (!key.startsWith("h:")) return;
         const i = Number(key.slice(2));
         const hit = s.result?.hits[i];
@@ -88,12 +97,13 @@ export function renderSearch(view, t) {
       .child(Scrollbar.vertical("search-hits").absolute().inset_0()));
 }
 
-function fileRow(t, path) {
+function fileRow(t, { path, count }) {
   const parts = path.split("/");
   const name = parts.pop();
   return h_flex().h(ROW_H).px(10).gap(4).items_center().text_size(12).bg(t.surface)
     .child(div().font_semibold().whitespace_nowrap().child(name))
-    .child(div().truncate().text_color(t.dim).text_size(11).child(parts.join("/")));
+    .child(div().flex_1().min_w(0).truncate().text_color(t.dim).text_size(11).child(parts.join("/")))
+    .child(div().flex_none().pl(8).text_color(t.dim).text_size(10).child(String(count)));
 }
 
 function hitRow(view, t, it) {

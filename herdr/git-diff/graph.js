@@ -204,6 +204,16 @@ export function renderGraph(view, t) {
     data.rangeKey = rangeKey;
     data.range = commitsInRange(data.commits, aSha, bSha);
   }
+  // What the summary says about A..B, by the web view's rules: a count, or a warning
+  // when both ends are loaded and nothing is between them (B is behind A).
+  const aIndex = indexOf.get(aSha);
+  const bIndex = indexOf.get(bSha);
+  const inRange = data.range.size - (data.range.has(WORKTREE) ? 1 : 0);
+  const backwards = Boolean(aSha && bSha) && aSha !== bSha && aIndex !== undefined && bIndex !== undefined && data.range.size === 0;
+  const rangeText = backwards ? null
+    : data.range.size === 0 ? null
+    : inRange === 0 && data.range.has(WORKTREE) ? "uncommitted only"
+    : `${inRange}${aIndex === undefined && view.graph.truncated ? "+" : ""} commit${inRange === 1 ? "" : "s"}${data.range.has(WORKTREE) ? " + uncommitted" : ""}`;
   const shortOf = (sha) => (isPseudoRev(sha) ? PSEUDO_LABEL[sha] : (rows[indexOf.get(sha) ?? -1]?.commit.shortSha ?? sha?.slice(0, 7)));
 
   const dragged = drag ? rows[drag.index]?.commit : null;
@@ -225,6 +235,8 @@ export function renderGraph(view, t) {
       .child(div().font_semibold().text_color(t.muted).child("History"))
       .when(Boolean(aSha && bSha), (e) => e.child(h_flex().gap(4).items_center().font_family(mono())
         .child(badge(t, "A")).child(div().child(shortOf(aSha) ?? "")).child(div().child("→")).child(badge(t, "B")).child(div().child(shortOf(bSha) ?? ""))))
+      .when(Boolean(aSha && bSha && rangeText), (e) => e.child(div().whitespace_nowrap().text_color(t.dim).child(`· ${rangeText}`)))
+      .when(backwards, (e) => e.child(div().whitespace_nowrap().text_color(t.ansi3).child("B is an ancestor of A: the diff runs backwards (⇄ swaps)")))
       .child(div().flex_1().min_w(0).child(status))
       .child(hide(view, t)))
     .child(rowsWindow(view, t, data, aSha, bSha));

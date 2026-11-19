@@ -225,3 +225,121 @@ export function findPair(rows: ReadonlyArray<SplitRow>, side: "old" | "new", lin
 
 /** Text draws a tab as nothing: pad each to the next 4-column stop. */
 export const untab = (text: string) => (text.includes("\t") ? text.replace(/[^\t]*\t/g, (s) => s.slice(0, -1).padEnd(s.length - 1 - ((s.length - 1) % 4) + 4)) : text);
+
+/** A half-open character range `[from, to)` in a line's drawn (untabbed) text. */
+export type Range = readonly [number, number];
+
+// Words (letters, digits, `_`, anything non-ASCII), runs of spaces, or one punctuation mark.
+const TOKEN = /[A-Za-z0-9_\u0080-￿]+|\s+|[^A-Za-z0-9_\s\u0080-￿]/g;
+const MAX_INLINE_CHARS = 1000;
+const MAX_INLINE_TOKENS = 300;
+
+/**
+ * The words that differ between a removed line and the added line that replaced it,
+ * as ranges on each side. Null when the lines are too long to compare or mostly
+ * different: then the whole-line tint already says everything.
+ */
+export function inlineChanges(before: string, after: string): { readonly del: Array<Range>; readonly add: Array<Range> } | null {
+  if (before === after || before.length > MAX_INLINE_CHARS || after.length > MAX_INLINE_CHARS) return null;
+  const a = before.match(TOKEN) ?? [];
+  const b = after.match(TOKEN) ?? [];
+  if (a.length > MAX_INLINE_TOKENS || b.length > MAX_INLINE_TOKENS) return null;
+
+  // Longest common token subsequence, filled from the end so the walk below goes forward.
+  const w = b.length + 1;
+  const lcs = new Uint16Array((a.length + 1) * w);
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      lcs[i * w + j] = a[i] === b[j] ? lcs[(i + 1) * w + j + 1]! + 1 : Math.max(lcs[(i + 1) * w + j]!, lcs[i * w + j + 1]!);
+    }
+  }
+  const del: Array<[number, number]> = [];
+  const add: Array<[number, number]> = [];
+  const mark = (out: Array<[number, number]>, from: number, len: number) => {
+    const last = out[out.length - 1];
+    if (last && last[1] === from) last[1] = from + len;
+    else out.push([from, from + len]);
+  };
+  let i = 0, j = 0, x = 0, y = 0, same = 0;
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && a[i] === b[j]) {
+      same += a[i]!.trim() ? a[i]!.length : 0;
+      x += a[i++]!.length;
+      y += b[j++]!.length;
+    } else if (j < b.length && (i === a.length || lcs[i * w + j + 1]! >= lcs[(i + 1) * w + j]!)) {
+      mark(add, y, b[j]!.length);
+      y += b[j++]!.length;
+    } else {
+      mark(del, x, a[i]!.length);
+      x += a[i++]!.length;
+    }
+  }
+  // Less than half of the shorter line's visible text kept: it was rewritten, not edited.
+  const visible = Math.min(before.replace(/\s/g, "").length, after.replace(/\s/g, "").length);
+  if (same * 2 < visible || (del.length === 0 && add.length === 0)) return null;
+  return { del, add };
+}
+
+/**
+ * Changed-word ranges for every removed and added line that has a partner, keyed
+ * `del<old>` / `add<new>`. Lines pair up the way `splitRows` pairs them, so both
+ * layouts mark the same words. Ranges are on the untabbed text, as drawn.
+ */
+export function inlineMarks(unified: ReadonlyArray<UnifiedRow>): Map<string, Array<Range>> {
+  const marks = new Map<string, Array<Range>>();
+  let dels: Array<DiffLine> = [];
+  let adds: Array<DiffLine> = [];
+  const flush = () => {
+    for (let k = 0; k < Math.min(dels.length, adds.length); k++) {
+      const d = dels[k]!;
+      const a = adds[k]!;
+      const c = inlineChanges(untab(d.text), untab(a.text));
+      if (!c) continue;
+      if (c.del.length) marks.set(`del${d.old}`, c.del);
+      if (c.add.length) marks.set(`add${a.new}`, c.add);
+    }
+    dels = [];
+    adds = [];
+  };
+  for (const row of unified) {
+    if (row.t === "line" && row.line.kind === "del") {
+      if (adds.length) flush();
+      dels.push(row.line);
+    } else if (row.t === "line" && row.line.kind === "add") adds.push(row.line);
+    else flush();
+  }
+  flush();
+  return marks;
+}
+
+/** A piece of a drawn line: inside a changed word, a search match, both or neither. */
+export interface Segment {
+  readonly text: string;
+  readonly changed: boolean;
+  readonly hit: boolean;
+}
+
+/** Cut `text` where changed-word ranges and case-insensitive matches of `query` start and end. */
+export function segments(text: string, changed: ReadonlyArray<Range> | undefined, query: string): Array<Segment> {
+  const hits: Array<Range> = [];
+  const q = query.toLowerCase();
+  if (q) {
+    const lower = text.toLowerCase();
+    // Lower-casing can change a string's length (rare): then skip marking matches.
+    if (lower.length === text.length) for (let at = lower.indexOf(q); at >= 0; at = lower.indexOf(q, at + q.length)) hits.push([at, at + q.length]);
+  }
+  const cuts = new Set<number>([0, text.length]);
+  for (const [f, t] of changed ?? []) cuts.add(f).add(t);
+  for (const [f, t] of hits) cuts.add(f).add(t);
+  const points = [...cuts].filter((p) => p >= 0 && p <= text.length).sort((x, y) => x - y);
+  const inside = (ranges: ReadonlyArray<Range>, p: number) => ranges.some(([f, t]) => p >= f && p < t);
+  const out: Array<Segment> = [];
+  for (let k = 0; k + 1 < points.length; k++) {
+    const from = points[k]!;
+    const seg = { text: text.slice(from, points[k + 1]), changed: inside(changed ?? [], from), hit: inside(hits, from) };
+    const last = out[out.length - 1];
+    if (last && last.changed === seg.changed && last.hit === seg.hit) out[out.length - 1] = { ...last, text: last.text + seg.text };
+    else out.push(seg);
+  }
+  return out.length ? out : [{ text, changed: false, hit: false }];
+}

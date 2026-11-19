@@ -43,9 +43,11 @@ function refItems(view) {
 
 function pullItems(view) {
   const q = view.picker.query.trim().toLowerCase();
-  return (view.pulls?.pulls ?? [])
-    .filter((p) => !q || `#${p.number} ${p.title} ${p.author} ${p.headRef}`.toLowerCase().includes(q))
-    .map((p) => ({ kind: "pr", pr: p }));
+  // While a pull request is shown, the first item leaves it (base and head stay as they are).
+  const stop = view.pr && (!q || `stop comparing clear exit #${view.pr}`.includes(q)) ? [{ kind: "stop", title: `Stop comparing #${view.pr}` }] : [];
+  return stop.concat((view.pulls?.pulls ?? [])
+    .filter((p) => !q || `#${p.number} ${p.title} ${p.author} ${p.headRef} ${p.baseRef}`.toLowerCase().includes(q))
+    .map((p) => ({ kind: "pr", pr: p })));
 }
 
 function list(view) {
@@ -56,6 +58,7 @@ function pick(view, cx, item) {
   const which = view.picker.which;
   view.closePicker(cx);
   if (item.kind === "pr") return view.loadPull(cx, item.pr.number);
+  if (item.kind === "stop") return view.choose(cx, view.base, view.head);
   if (which === "base") view.choose(cx, item.ref, view.head);
   else view.choose(cx, view.base, item.ref);
 }
@@ -127,7 +130,7 @@ function listBody(view, t, items, draw) {
   const sizes = items.map((it) => (it.kind === "head" ? HEAD_H : ROW_H));
   return div().flex_1().min_h(0).relative()
     .when(items.length === 0, (e) => e.child(div().p(12).text_size(12).text_color(t.dim).child(view.picker.which === "pr" ? (view.pullsError ?? (view.pulls ? "No open pull requests" : "Loading pull requests…")) : "Nothing matches")))
-    .child(fill(v_virtual_list("picker-list", items.length, sizes, (i) => `${i}:${items[i].kind === "head" ? items[i].title : items[i].ref ?? items[i].pr?.number}`, safeRows((range) =>
+    .child(fill(v_virtual_list("picker-list", items.length, sizes, (i) => `${i}:${items[i].kind === "head" ? items[i].title : items[i].ref ?? items[i].pr?.number ?? items[i].kind}`, safeRows((range) =>
       items.slice(range.start, range.end).map((it, k) => draw(it, range.start + k)))).track_scroll(p.scroll).on_item_click((key, cx) => {
       const it = items[Number(key.split(":")[0])];
       if (it && it.kind !== "head") pick(view, cx, it);
@@ -167,6 +170,11 @@ export function renderPullPicker(view, t) {
   const draw = (it, i) => {
     const pr = it.pr;
     const active = i === p.cursorIndex;
+    if (it.kind === "stop") {
+      return h_flex().id("pr-stop").h(ROW_H).px(10).gap(8).items_center().text_size(12).cursor_pointer()
+        .when(active, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
+        .child(icon("close", 12, t.dim)).child(div().child(it.title));
+    }
     return h_flex()
       .id(`pr-${pr.number}`)
       .h(ROW_H)

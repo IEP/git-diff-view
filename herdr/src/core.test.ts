@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { INDEX, WORKTREE } from "@/shared/api";
 import { utf8Decode, unquotePath } from "@/shared/gitText";
 import { naturalCompare } from "@/lib/tree";
-import { expand, findLine, findPair, parseFilePatch, splitLines, splitRows, unifiedRows, untab } from "./diffModel";
+import { expand, findLine, findPair, inlineChanges, inlineMarks, parseFilePatch, segments, splitLines, splitRows, unifiedRows, untab } from "./diffModel";
 import { defaultRefs, openRepo, type Host } from "./repo";
 import { buildIndex, search, snippet, splitMatches } from "./search";
 
@@ -237,4 +237,45 @@ describe("repository (real git)", () => {
     await expect(openRepo({ ...h, run: (c, a) => h.run(c, a).then((r) => (a.includes("--show-toplevel") ? { ...r, code: 128 } : r)) })).rejects.toThrow("Not a git repository");
     await rm(outside, { recursive: true, force: true });
   });
+});
+
+describe("changed words", () => {
+  test("marks only the words that differ", () => {
+    const c = inlineChanges("const x = foo(a, b);", "const x = bar(a, b, c);")!;
+    expect(c.del.map(([f, t]) => "const x = foo(a, b);".slice(f, t))).toEqual(["foo"]);
+    expect(c.add.map(([f, t]) => "const x = bar(a, b, c);".slice(f, t))).toEqual(["bar", ", c"]);
+  });
+
+  test("leaves rewritten, identical and oversized lines alone", () => {
+    expect(inlineChanges("alpha beta gamma", "one two three")).toBeNull();
+    expect(inlineChanges("same", "same")).toBeNull();
+    expect(inlineChanges("x".repeat(2000), "y".repeat(2000))).toBeNull();
+  });
+
+  test("pairs removed and added lines the way split view does, on untabbed text", () => {
+    const patch = ["@@ -1,2 +1,2 @@", "-\tlet a = 1;", "-keep", "+\tlet a = 2;", "+other"].join("\n");
+    const marks = inlineMarks(unifiedRows(parseFilePatch(patch), null, null, new Map()));
+    expect(marks.get("del1")).toEqual([[12, 13]]);
+    expect(marks.get("add1")).toEqual([[12, 13]]);
+    expect(marks.has("del2")).toBe(false); // "keep" → "other" is a rewrite
+  });
+
+  test("segments merge changed words with search matches", () => {
+    expect(segments("foo bar baz", [[4, 7]], "a")).toEqual([
+      { text: "foo ", changed: false, hit: false },
+      { text: "b", changed: true, hit: false },
+      { text: "a", changed: true, hit: true },
+      { text: "r", changed: true, hit: false },
+      { text: " b", changed: false, hit: false },
+      { text: "a", changed: false, hit: true },
+      { text: "z", changed: false, hit: false },
+    ]);
+    expect(segments("plain", undefined, "")).toEqual([{ text: "plain", changed: false, hit: false }]);
+  });
+});
+
+test("search hits come in path order, as the server's ORDER BY path", () => {
+  const patch = ["diff --git a/b.txt b/b.txt", "--- a/b.txt", "+++ b/b.txt", "@@ -0,0 +1 @@", "+match b",
+    "diff --git a/a.txt b/a.txt", "--- a/a.txt", "+++ b/a.txt", "@@ -0,0 +1,2 @@", "+match a1", "+match a2", ""].join("\n");
+  expect(search(buildIndex(patch, false), "match").hits.map((h) => `${h.path}:${h.line}`)).toEqual(["a.txt:1", "a.txt:2", "b.txt:1"]);
 });

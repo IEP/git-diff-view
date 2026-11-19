@@ -21,7 +21,12 @@ export interface SearchIndex {
 
 export function buildIndex(patch: string, partial: boolean): SearchIndex {
   const parsed = parsePatch(patch);
-  const rows = parsed.slice(0, MAX_ROWS).map((r) => ({ ...r, text: r.text.slice(0, MAX_LINE) }));
+  // By path, then patch order, as the server's `ORDER BY path, rowid`: untracked files
+  // come after the tracked ones in the patch, but belong among them in the results.
+  const rows = parsed
+    .slice(0, MAX_ROWS)
+    .map((r) => ({ ...r, text: r.text.slice(0, MAX_LINE) }))
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   return { rows, lower: rows.map((r) => r.text.toLowerCase()), partial: partial || parsed.length > MAX_ROWS };
 }
 
