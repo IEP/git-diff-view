@@ -9,6 +9,7 @@ import { naturalCompare } from "@/lib/tree";
 import { expand, findLine, findPair, inlineChanges, inlineMarks, parseFilePatch, segments, splitLines, splitRows, unifiedRows, untab } from "./diffModel";
 import { defaultRefs, openRepo, type Host } from "./repo";
 import { buildIndex, search, snippet, splitMatches } from "./search";
+import { highlightLines, languageFor, planChunks, SyntaxDoc, type SyntaxKind } from "./syntax";
 
 const lines = (n: number) => Array.from({ length: n }, (_, i) => `line ${i + 1}`);
 
@@ -261,16 +262,26 @@ describe("changed words", () => {
   });
 
   test("segments merge changed words with search matches", () => {
+    const seg = (text: string, changed: boolean, hit: boolean, kind: SyntaxKind | null = null) => ({ text, changed, hit, kind });
     expect(segments("foo bar baz", [[4, 7]], "a")).toEqual([
-      { text: "foo ", changed: false, hit: false },
-      { text: "b", changed: true, hit: false },
-      { text: "a", changed: true, hit: true },
-      { text: "r", changed: true, hit: false },
-      { text: " b", changed: false, hit: false },
-      { text: "a", changed: false, hit: true },
-      { text: "z", changed: false, hit: false },
+      seg("foo ", false, false),
+      seg("b", true, false),
+      seg("a", true, true),
+      seg("r", true, false),
+      seg(" b", false, false),
+      seg("a", false, true),
+      seg("z", false, false),
     ]);
-    expect(segments("plain", undefined, "")).toEqual([{ text: "plain", changed: false, hit: false }]);
+    expect(segments("plain", undefined, "")).toEqual([seg("plain", false, false)]);
+    // Syntax runs cut too, and are dropped when they don't fit the text.
+    expect(segments("let x = 1", [[4, 5]], "", [[0, 3, "keyword"], [8, 9, "number"]])).toEqual([
+      seg("let", false, false, "keyword"),
+      seg(" ", false, false),
+      seg("x", true, false),
+      seg(" = ", false, false),
+      seg("1", false, false, "number"),
+    ]);
+    expect(segments("ab", undefined, "", [[0, 5, "string"]])).toEqual([seg("ab", false, false)]);
   });
 });
 
@@ -278,4 +289,61 @@ test("search hits come in path order, as the server's ORDER BY path", () => {
   const patch = ["diff --git a/b.txt b/b.txt", "--- a/b.txt", "+++ b/b.txt", "@@ -0,0 +1 @@", "+match b",
     "diff --git a/a.txt b/a.txt", "--- a/a.txt", "+++ b/a.txt", "@@ -0,0 +1,2 @@", "+match a1", "+match a2", ""].join("\n");
   expect(search(buildIndex(patch, false), "match").hits.map((h) => `${h.path}:${h.line}`)).toEqual(["a.txt:1", "a.txt:2", "b.txt:1"]);
+});
+
+describe("syntax colors", () => {
+  test("picks a grammar by extension or name", () => {
+    expect(languageFor("src/App.tsx")).toBe("tsx");
+    expect(languageFor("a/b/Makefile")).toBe("makefile");
+    expect(languageFor("README")).toBeNull();
+    expect(languageFor(".gitignore")).toBeNull();
+    expect(languageFor("x.unknownext")).toBeNull();
+  });
+
+  test("gives runs per line, including across lines", () => {
+    const lines = ["const a = 1; /* one", "two */ let s = `x", "y`;"];
+    const runs = highlightLines("ts", lines);
+    expect(runs).toHaveLength(3);
+    const text = (i: number, kind: string) => runs[i]!.filter((r) => r[2] === kind).map(([f, t]) => lines[i]!.slice(f, t));
+    expect(text(0, "keyword")).toEqual(["const"]);
+    expect(text(0, "number")).toEqual(["1"]);
+    expect(text(0, "comment")).toEqual(["/* one"]);
+    expect(text(1, "comment")).toEqual(["two */"]);
+    expect(text(1, "string")).toEqual(["`x"]);
+    expect(text(2, "string")).toEqual(["y`"]);
+  });
+
+  test("chunks cut at blank lines and cover every line once", () => {
+    const lines = Array.from({ length: 2000 }, (_, i) => (i % 10 === 9 ? "" : `let v${i} = ${i};`));
+    const chunks = planChunks(lines);
+    expect(chunks[0]![0]).toBe(0);
+    expect(chunks[chunks.length - 1]![1]).toBe(2000);
+    for (let k = 1; k < chunks.length; k++) {
+      expect(chunks[k]![0]).toBe(chunks[k - 1]![1]);
+      expect(lines[chunks[k]![0] - 1]).toBe("");
+    }
+    const doc = new SyntaxDoc("js", lines);
+    expect(doc.runs(15)).toBeUndefined();
+    const c = doc.chunkOf(15);
+    doc.highlight(c);
+    expect(doc.isDone(c)).toBe(true);
+    expect(doc.runs(15)?.[0]).toEqual([0, 3, "keyword"]);
+  });
+});
+
+test("template substitutions draw plain, not as string", () => {
+  const line = "const s = `a ${name} b`;";
+  const runs = highlightLines("js", [line])[0]!;
+  const kindAt = (i: number) => runs.find(([f, t]) => i >= f && i < t)?.[2] ?? null;
+  expect(kindAt(line.indexOf("a "))).toBe("string");
+  expect(kindAt(line.indexOf("name"))).toBeNull();
+});
+
+test("an edited doc keeps the runs of lines above and below the edit", () => {
+  const before = new SyntaxDoc("js", ["let a = 1;", "", "let b = 2;", "", "let c = 3;"]);
+  before.chunks.forEach((_, k) => before.highlight(k));
+  const after = new SyntaxDoc("js", ["let a = 1;", "", "let b = 22, d;", "", "let c = 3;"], before);
+  expect(after.runs(1)).toEqual(before.runs(1));
+  expect(after.runs(5)).toEqual(before.runs(5));
+  expect(after.runs(3)).toBeUndefined();
 });

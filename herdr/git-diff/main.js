@@ -14,7 +14,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, VirtualListScrollHandle } from "gpui-base";
 import { checking, closeOverlay, exec, focused, nextCommand, notify, panes, props, readTextFile, run, spaces, theme, watchFolder } from "herdr";
-import { buildIndex, defaultRefs, expand, filesInTreeOrder, buildTree, isPseudoRev, OBJECT_ID, openRepo, parseFilePatch, search, splitLines, splitRows, unifiedRows, inlineMarks, WORKTREE } from "./core.js";
+import { buildIndex, defaultRefs, expand, filesInTreeOrder, buildTree, isPseudoRev, OBJECT_ID, openRepo, parseFilePatch, search, splitLines, splitRows, unifiedRows, inlineMarks, languageFor, SyntaxDoc, MAX_SYNTAX_CHARS, untab, WORKTREE } from "./core.js";
 import { button, icon, separator } from "./ui.js";
 import { renderGraph, graphKeys, graphRows, finishDrag } from "./graph.js";
 import { renderTree, treeKeys } from "./tree.js";
@@ -284,7 +284,7 @@ export default class GitDiff extends View {
       if (this.selected !== f.path || this.compare !== cmp) return;
       // Same text as on screen: keep the rows (and their scroll) as they are.
       if (this.file?.key === key && this.file.data.patch === data.patch && this.file.data.newContent === data.newContent && this.file.data.oldContent === data.oldContent) return;
-      this.file = { key, path: f.path, data, parsed: parseFilePatch(data.patch), oldLines: splitLines(data.oldContent), newLines: splitLines(data.newContent) };
+      this.file = { key, path: f.path, data, parsed: parseFilePatch(data.patch), oldLines: splitLines(data.oldContent), newLines: splitLines(data.newContent), syntax: this.syntaxFor(f.path, data) };
       this.fileError = null;
       this.rowsCache = null;
     } catch (e) {
@@ -445,6 +445,64 @@ export default class GitDiff extends View {
     this.expanded.set(path, expand(this.expanded.get(path) ?? new Map(), gap, how));
     this.rowsCache = null;
     cx.notify();
+  }
+
+  /**
+   * Syntax state for a file's two sides: `{ source, doc }` each, or null without full
+   * text (too large, binary) or a known language. A side whose text didn't change keeps
+   * its doc, so a refresh re-highlights only what moved.
+   */
+  syntaxFor(path, data) {
+    const lang = languageFor(path);
+    if (!lang) return null;
+    const prev = this.file?.path === path ? this.file.syntax : null;
+    const side = (content, before) => {
+      if (content === null || content.length > MAX_SYNTAX_CHARS) return null;
+      if (before?.source === content) return before;
+      return { source: content, doc: new SyntaxDoc(lang, splitLines(content).map(untab), before?.doc) };
+    };
+    return { old: side(data.oldContent, prev?.old), new: side(data.newContent, prev?.new) };
+  }
+
+  /**
+   * Highlight, in the background, the chunks behind the lines the diff shows: one chunk
+   * (a few tens of ms) per tick, so the window keeps responding. Rows are drawn plain
+   * until their chunk is done. Runs again whenever the rows change (a gap opened).
+   */
+  startSyntax(cx) {
+    const f = this.file;
+    const built = this.rowsCache;
+    if (!f?.syntax || this.syntaxBusy || !built || built.file !== f || this.syntaxScanned === built) return;
+    this.syntaxScanned = built;
+    const jobs = [];
+    const seen = new Set();
+    for (const r of built.unified) {
+      if (r.t !== "line") continue;
+      // Removed lines come from the base side; added and unchanged ones from the head side.
+      const side = r.line.kind === "del" ? "old" : "new";
+      const doc = f.syntax[side]?.doc;
+      if (!doc) continue;
+      const chunk = doc.chunkOf(side === "old" ? r.line.old : r.line.new);
+      if (doc.isDone(chunk) || seen.has(`${side}${chunk}`)) continue;
+      seen.add(`${side}${chunk}`);
+      jobs.push([doc, chunk]);
+    }
+    if (!jobs.length) return;
+    this.syntaxBusy = true;
+    cx.spawn(async (cx) => {
+      try {
+        for (const [doc, chunk] of jobs) {
+          if (this.file !== f) break;
+          doc.highlight(chunk);
+          cx.notify();
+          await cx.sleep(1);
+        }
+      } finally {
+        this.syntaxBusy = false;
+        this.syntaxScanned = null; // the rows may have changed meanwhile: look again
+        cx.notify();
+      }
+    });
   }
 
   /** The selected file's rows, rebuilt only when the file, its open gaps or the layout change. */
@@ -658,6 +716,7 @@ export default class GitDiff extends View {
     if (!this.repo) return root.child(message(t, "Opening repository…"));
 
     const body = this.comparison(t);
+    this.startSyntax(cx);
     if (!this.showGraph) return root.child(body).when(Boolean(this.picker), (e) => e.child(this.popover(t)));
     return root
       .child(div().h(this.graphHeight).flex_none().min_h(0).child(renderGraph(this, t)))

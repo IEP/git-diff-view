@@ -26,13 +26,38 @@ DOM, `Intl`, `TextEncoder`, Node or SQLite) or by gpui-kit.
   - In a live comparison, search runs again after each refresh. It rebuilds
     only when the patch text changed, and keeps the highlighted hit.
 - The search-jump border follows its line when you switch layout or open a gap.
+- Syntax highlighting, with the same highlight.js grammars as the web view (37
+  common languages, through `lowlight`; `src/syntax.ts`). Colours come from
+  the Herdr theme's ANSI palette.
+
+## How syntax highlighting differs
+
+The mod's script engine runs highlight.js at about 6 ms per KB, on the window's
+thread, and slows down sharply on large inputs: a 263 KB file did not finish in
+one call within about 45 seconds, while 50 KB pieces took about 330 ms each. So
+the mod never highlights a file whole:
+
+- Each side is cut at blank lines into chunks of about 4 KB. Only chunks that
+  hold lines the diff shows are highlighted, one per tick in the background,
+  and rows are drawn plain until their chunk is done.
+- Each chunk is highlighted on its own. If a chunk edge falls inside a
+  construct that spans a blank line (a template string, a block comment or
+  docstring, a fenced code block), the next chunk starts outside it and is
+  coloured wrongly up to the construct's end. The web view highlights the
+  whole file.
+- After an edit to a live file, lines above and below the edited stretch keep
+  their colours while their chunks are redone, so saving doesn't flash plain.
+- No highlighting without full file text: files over 1 MB, files too large to
+  read, and CRLF files the mod shows from the patch alone. Lines over 2,000
+  characters stay plain.
+- The language comes from the file extension (or `Makefile`). There is no
+  content-based detection, so files without a known extension stay plain.
 
 ## Not practical in Herdr
 
 | Web behaviour | Why not in the mod |
 | --- | --- |
 | Search index in in-memory SQLite FTS5 (`src/server/DiffIndex.ts`) | No SQLite in the mod runtime. `src/search.ts` scans lower-cased lines instead, which takes milliseconds at the 200k-line cap. Matching is the same: literal and case-insensitive. |
-| Syntax highlighting (`diffViewHighlight`) | gpui-kit's only highlighter is the `Editor` widget, which shows a whole document and can't colour single rows in a virtual list. Doing it would need a pure-JS tokenizer (lowlight-style grammars) bundled into `core.js`, plus a `div` per token in every drawn row. That's possible but heavy, so it's left out for now. |
 | URL state (`?base&head&file`, shareable links) | A mod has no address bar. Tab props (`folder`, `on`, `base`/`head` or `pr`) do the same job when opening a tab. |
 | Light/dark toggle | The mod follows Herdr's theme by design. |
 | Tooltips on tree rows (rename "old → new") | Virtual-list rows can't register handlers, including `tooltip`. The rename could still be shown as inline text (doable). |

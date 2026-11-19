@@ -4,6 +4,8 @@
  * time from either end, or all at once, when both full contents are known.
  */
 
+import type { SyntaxKind, SyntaxRun } from "./syntax";
+
 export type LineKind = "ctx" | "add" | "del";
 
 export interface DiffLine {
@@ -312,15 +314,24 @@ export function inlineMarks(unified: ReadonlyArray<UnifiedRow>): Map<string, Arr
   return marks;
 }
 
-/** A piece of a drawn line: inside a changed word, a search match, both or neither. */
+/** A piece of a drawn line: its syntax color, and whether it's in a changed word or a search match. */
 export interface Segment {
   readonly text: string;
   readonly changed: boolean;
   readonly hit: boolean;
+  readonly kind: SyntaxKind | null;
 }
 
-/** Cut `text` where changed-word ranges and case-insensitive matches of `query` start and end. */
-export function segments(text: string, changed: ReadonlyArray<Range> | undefined, query: string): Array<Segment> {
+/**
+ * Cut `text` where syntax runs, changed-word ranges and case-insensitive matches of
+ * `query` start and end. Runs that don't fit the text (it changed since) are ignored.
+ */
+export function segments(
+  text: string,
+  changed: ReadonlyArray<Range> | undefined,
+  query: string,
+  syntax?: ReadonlyArray<SyntaxRun> | null,
+): Array<Segment> {
   const hits: Array<Range> = [];
   const q = query.toLowerCase();
   if (q) {
@@ -328,18 +339,23 @@ export function segments(text: string, changed: ReadonlyArray<Range> | undefined
     // Lower-casing can change a string's length (rare): then skip marking matches.
     if (lower.length === text.length) for (let at = lower.indexOf(q); at >= 0; at = lower.indexOf(q, at + q.length)) hits.push([at, at + q.length]);
   }
+  const runs = syntax && syntax.every(([, t]) => t <= text.length) ? syntax : [];
   const cuts = new Set<number>([0, text.length]);
   for (const [f, t] of changed ?? []) cuts.add(f).add(t);
   for (const [f, t] of hits) cuts.add(f).add(t);
+  for (const [f, t] of runs) cuts.add(f).add(t);
   const points = [...cuts].filter((p) => p >= 0 && p <= text.length).sort((x, y) => x - y);
   const inside = (ranges: ReadonlyArray<Range>, p: number) => ranges.some(([f, t]) => p >= f && p < t);
   const out: Array<Segment> = [];
+  let r = 0;
   for (let k = 0; k + 1 < points.length; k++) {
     const from = points[k]!;
-    const seg = { text: text.slice(from, points[k + 1]), changed: inside(changed ?? [], from), hit: inside(hits, from) };
+    while (r < runs.length && runs[r]![1] <= from) r++;
+    const kind = r < runs.length && runs[r]![0] <= from ? runs[r]![2] : null;
+    const seg = { text: text.slice(from, points[k + 1]), changed: inside(changed ?? [], from), hit: inside(hits, from), kind };
     const last = out[out.length - 1];
-    if (last && last.changed === seg.changed && last.hit === seg.hit) out[out.length - 1] = { ...last, text: last.text + seg.text };
+    if (last && last.changed === seg.changed && last.hit === seg.hit && last.kind === seg.kind) out[out.length - 1] = { ...last, text: last.text + seg.text };
     else out.push(seg);
   }
-  return out.length ? out : [{ text, changed: false, hit: false }];
+  return out.length ? out : [{ text, changed: false, hit: false, kind: null }];
 }

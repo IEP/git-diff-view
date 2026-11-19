@@ -197,15 +197,44 @@ function pieces(p) {
   return (p.text.match(/\S{1,40}\s*|\s+/g) ?? [p.text]).map((text) => ({ ...p, text }));
 }
 
+// Syntax colors from the theme's ANSI palette, so they follow the person's theme.
+function syntaxColor(t, kind) {
+  switch (kind) {
+    case "keyword": return t.ansi5;
+    case "string": return t.ansi2;
+    case "number": return t.ansi6;
+    case "comment": return t.dim;
+    case "function": return t.ansi4;
+    case "type": return t.ansi3;
+    case "attr": return t.ansi6;
+    case "tag": return t.ansi1;
+    case "meta": return t.ansi6;
+    default: return null;
+  }
+}
+
+/**
+ * The syntax runs for line `n` of a side, if that side's chunk is highlighted and its
+ * text is the line being drawn (a live file can move between the patch and the read).
+ */
+function runsFor(view, side, n, s) {
+  const doc = view.file?.syntax?.[side]?.doc;
+  // The file's lines lose a CRLF's "\r"; the patch's keep it.
+  if (!doc || n == null || doc.lines[n - 1] !== (s.endsWith("\r") ? s.slice(0, -1) : s)) return null;
+  return doc.runs(n) ?? null;
+}
+
 // Changed words get a stronger tint of the line's color; search matches stay yellow on top.
-function text(view, t, raw, highlight, changed, kind) {
+function text(view, t, raw, highlight, changed, kind, side, n) {
   const s = untab(raw) || " ";
-  const parts = segments(s, changed, highlight);
+  const parts = segments(s, changed, highlight, side ? runsFor(view, side, n, untab(raw)) : null);
   const word = kind === "add" ? alpha(t.ansi2, "4d") : alpha(t.ansi1, "4d");
-  const content = parts.length === 1 && !parts[0].changed && !parts[0].hit
+  const content = parts.length === 1 && !parts[0].changed && !parts[0].hit && !parts[0].kind
     ? s
     : h_flex().when(view.wrap, (e) => e.flex_wrap()).children((view.wrap ? parts.flatMap(pieces) : parts).map((p) => {
-      const el = div().whitespace_nowrap().child(p.text);
+      let el = div().whitespace_nowrap().child(p.text);
+      const color = p.kind ? syntaxColor(t, p.kind) : null;
+      if (color) el = el.text_color(color);
       if (p.hit) return el.bg(alpha(t.ansi3, "66")).rounded(2);
       return p.changed ? el.bg(word) : el;
     }));
@@ -230,10 +259,13 @@ function lineRow(view, t, line, highlight, hl, h, marks) {
     .child(num(t, line.old, c.num))
     .child(num(t, line.new, c.num))
     .child(div().w(16).flex_none().text_color(c.signColor).child(c.sign))
-    .child(text(view, t, line.text, highlight, line.kind === "ctx" ? undefined : marks.get(line.kind === "add" ? `add${line.new}` : `del${line.old}`), line.kind));
+    .child(text(view, t, line.text, highlight, line.kind === "ctx" ? undefined : marks.get(line.kind === "add" ? `add${line.new}` : `del${line.old}`), line.kind,
+      line.kind === "del" ? "old" : "new", line.kind === "del" ? line.old : line.new));
 }
 
-function half(view, t, side, highlight, marks) {
+// `syntaxAt`: the side and line whose syntax colors this half draws. Unchanged lines
+// use the head side on both halves, so only that side needs highlighting for them.
+function half(view, t, side, highlight, marks, syntaxAt) {
   if (!side) return h_flex().flex_1().min_w(0).h_full().bg(t.canvas).child(div().w(NUM_W).flex_none());
   const c = lineColors(t, side.kind);
   return h_flex()
@@ -244,7 +276,7 @@ function half(view, t, side, highlight, marks) {
     .when(Boolean(c.bg), (e) => e.bg(c.bg))
     .child(num(t, side.n, c.num))
     .child(div().w(14).flex_none().text_color(c.signColor).child(c.sign))
-    .child(text(view, t, side.text, highlight, side.kind === "ctx" ? undefined : marks.get(`${side.kind}${side.n}`), side.kind));
+    .child(text(view, t, side.text, highlight, side.kind === "ctx" ? undefined : marks.get(`${side.kind}${side.n}`), side.kind, syntaxAt?.[0], syntaxAt?.[1]));
 }
 
 function pairRow(view, t, r, highlight, hl, h, marks) {
@@ -254,7 +286,7 @@ function pairRow(view, t, r, highlight, hl, h, marks) {
     .flex_none()
     .items_stretch()
     .when(hl, (e) => e.border_1().border_color(t.accent))
-    .child(half(view, t, r.left, highlight, marks))
+    .child(half(view, t, r.left, highlight, marks, r.left && (r.left.kind === "ctx" ? ["new", r.right?.n] : ["old", r.left.n])))
     .child(div().w(1).flex_none().bg(t.border))
-    .child(half(view, t, r.right, highlight, marks));
+    .child(half(view, t, r.right, highlight, marks, r.right && ["new", r.right.n]));
 }
