@@ -1,15 +1,18 @@
 /**
- * Syntax colors for the Herdr mod's diff, with lowlight (highlight.js grammars, as the
- * web view's `@git-diff-view` uses).
+ * Syntax colors for the Herdr mod's diff.
  *
- * The mod's script engine is slow at this (about 6 ms per KB, on the window's thread),
- * and Herdr interrupts script work that holds up a frame, so a file is never
- * highlighted whole. It is cut
- * at blank lines into chunks of about a KB, and only the chunks holding lines the diff
- * shows are highlighted, a few milliseconds' worth per tick, by the caller. A construct that spans a blank
- * line at a chunk edge (a template string, a block comment) can lose its color there.
+ * JS/TS files go through a hand-written lexer (`lexer.ts`), top to bottom, carrying
+ * its state from line to line: about 0.4 ms per KB in the mod. Everything else uses
+ * lowlight (the highlight.js grammars the web view's `@git-diff-view` uses), which is
+ * about 25 times slower there (~6 ms per KB, on the window's thread), and Herdr kills a
+ * script call that runs for about half a second. So lowlight never sees a whole file:
+ * it is cut at blank lines into chunks of about a KB, and only chunks holding lines the
+ * diff shows are highlighted, a few milliseconds' worth per tick, by the caller. A
+ * construct spanning a blank line at a chunk edge (a block comment, a docstring) can be
+ * colored wrongly there. Measurements: herdr/research/faster-syntax-highlighting.md.
  */
 import { createLowlight, common } from "lowlight";
+import { cloneState, initState, lexLine, LEXED, type LexState } from "./lexer";
 
 /** What a token is, reduced to the few kinds the mod colors. */
 export type SyntaxKind = "keyword" | "string" | "number" | "comment" | "function" | "type" | "attr" | "tag" | "meta";
@@ -135,14 +138,26 @@ export function planChunks(lines: ReadonlyArray<string>): Array<readonly [number
   return chunks;
 }
 
+/** Lexer state is saved every this many lines, so an edit re-lexes from just above it. */
+const CHECKPOINT = 64;
+
 /**
- * One side of a file, highlighted a chunk at a time. `runs(n)` is the 1-based line's
- * runs once its chunk is done, else undefined (draw it plain for now).
+ * One side of a file's syntax colors, worked out a slice at a time by the caller:
+ * - JS/TS (`LEXED`): the hand-written lexer, top to bottom, carrying its state from
+ *   line to line, so there are no chunk edges;
+ * - everything else: lowlight, a blank-line-cut chunk at a time.
+ * `runs(n)` is the 1-based line's runs once worked out, else undefined (draw it plain).
  */
 export class SyntaxDoc {
   readonly chunks: ReadonlyArray<readonly [number, number]>;
+  /** Colored by the lexer rather than lowlight. */
+  readonly lexed: boolean;
   private readonly done: Array<boolean>;
-  private readonly lineRuns: Array<Array<SyntaxRun> | null | undefined>;
+  private readonly lineRuns: Array<ReadonlyArray<SyntaxRun> | null | undefined>;
+  /** Lexer: the next line (0-based) to lex, the state before it, and saved states. */
+  private next = 0;
+  private state: LexState = initState();
+  private readonly checkpoints = new Map<number, LexState>([[0, initState()]]);
 
   constructor(
     readonly lang: string,
@@ -150,12 +165,14 @@ export class SyntaxDoc {
     readonly lines: ReadonlyArray<string>,
     /**
      * The same side before an edit: lines above and below the edited stretch keep its
-     * runs, so a live file doesn't flash plain on every save. Their chunks are still
-     * redone, but the old colors show until then.
+     * runs, so a live file doesn't flash plain on every save. They are still worked out
+     * again (the lexer resumes from the checkpoint above the edit), but the old colors
+     * show until then.
      */
     before?: SyntaxDoc | null,
   ) {
-    this.chunks = planChunks(lines);
+    this.lexed = LEXED.has(lang);
+    this.chunks = this.lexed ? [] : planChunks(lines);
     this.done = this.chunks.map(() => false);
     this.lineRuns = new Array(lines.length);
     if (before && before.lang === lang) {
@@ -166,11 +183,39 @@ export class SyntaxDoc {
       while (tail < old.length - head && tail < lines.length - head && old[old.length - 1 - tail] === lines[lines.length - 1 - tail]) tail++;
       for (let i = 0; i < head; i++) this.lineRuns[i] = before.lineRuns[i];
       for (let k = 1; k <= tail; k++) this.lineRuns[lines.length - k] = before.lineRuns[old.length - k];
+      if (this.lexed) {
+        // Lines above the edit lex the same: resume from the last checkpoint at or above it.
+        const from = Math.floor(Math.min(head, before.next) / CHECKPOINT) * CHECKPOINT;
+        for (const [at, st] of before.checkpoints) if (at <= from) this.checkpoints.set(at, cloneState(st));
+        this.next = from;
+        this.state = cloneState(this.checkpoints.get(from) ?? initState());
+      }
     }
   }
 
   runs(line: number): ReadonlyArray<SyntaxRun> | null | undefined {
     return this.lineRuns[line - 1];
+  }
+
+  /** Whether a 1-based line's colors are still to be worked out. */
+  needs(line: number): boolean {
+    if (line < 1 || line > this.lines.length) return false;
+    return this.lexed ? line - 1 >= this.next : !this.isDone(this.chunkOf(line));
+  }
+
+  /**
+   * Work towards a 1-based line's colors until `deadline` (a `Date.now()` time): the
+   * lexer goes on down the file (at least one line), lowlight does that line's chunk.
+   */
+  work(line: number, deadline: number): void {
+    if (!this.lexed) return this.highlight(this.chunkOf(line));
+    const lines = this.lines;
+    do {
+      const i = this.next;
+      if (i % CHECKPOINT === 0) this.checkpoints.set(i, cloneState(this.state));
+      this.lineRuns[i] = lexLine(lines[i]!, this.state);
+      this.next = i + 1;
+    } while (this.next < lines.length && (this.next % 16 !== 0 || Date.now() < deadline));
   }
 
   /** The chunk holding a 1-based line. */
@@ -189,7 +234,7 @@ export class SyntaxDoc {
     return this.done[chunk] ?? true;
   }
 
-  /** Highlight one chunk (a few tens of ms in the mod). */
+  /** Highlight one lowlight chunk (about 8 ms in the mod). */
   highlight(chunk: number): void {
     if (this.isDone(chunk)) return;
     this.done[chunk] = true;

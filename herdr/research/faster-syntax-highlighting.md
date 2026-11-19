@@ -17,7 +17,7 @@ Keep lowlight for everything else, including `.jsx`/`.tsx` until the lexer handl
   - 263 KB: about 1.7 s over ~290 ticks today; about 40 ms over ~7 ticks with the lexer.
 - **Chunk edges.** The lexer carries its state from one line to the next, so any line can be a chunk edge and the blank-line chunking (and the colours it breaks) goes away.
 - **Bundle size.** The lexer is 4.2 KB minified, against 177 KB for `lowlight` + `common`.
-- **The "superlinear" premise was not reproduced.** In the proxy, lowlight is linear from 8 to 256 KB. Why the 263 KB run never finished in the app is still open (section 1, probe in Appendix B).
+- **The "superlinear" premise was wrong.** Lowlight is linear in the proxy and in the app; the 263 KB run was killed by the host, which stops a single script call after roughly half a second (section 1, in-app results).
 
 Two alternatives were ruled out:
 
@@ -81,6 +81,22 @@ An earlier run that overlapped other benchmarks showed the same shapes, with ref
   - Frozen means the script really was computing that long, i.e. real superlinear cost or a pathology in the app's engine.
   - Responsive means the job was stopped early (the interrupt or something else) and the work never ran.
 - **Needs in-app check:** probe P2 in Appendix B times lowlight on growing prefixes, one per frame, and logs a `start` line before each call. A `start` with no `done` means the task was killed there; ms/KB rising with size means real superlinear cost.
+
+### In-app results (probe P1–P3, run 2026-11-19 in Herdr 0.1.16)
+
+The Appendix B probe, run in the user's window, settles the open questions:
+
+| check | result |
+|---|---|
+| `WebAssembly` / `Worker` / `SharedArrayBuffer` | `undefined` / `undefined` / `function` |
+| `RegExp` with 300 captures | `too many captures` (confirms the libregexp limit) |
+| `loop(3e5)`, calls 1–20 | 17–21 ms on every call: no JIT tiering seen, about the proxy interpreter's speed |
+| hand lexer, 16 / 32 / 64 KB | 6 / 11 / 24 ms: **~0.37 ms/KB**, linear |
+| lowlight, 16 / 32 KB | 203 / 292 ms: 12.7 / 9.1 ms/KB |
+| lowlight, 64 KB | `start` logged, no `done` after a minute: **the task was killed** |
+
+- **Not superlinear: killed.** At lowlight's measured rate, 64 KB is about 600 ms in one call. Calls up to about 330 ms finish, and this one never did, so the host stops a single script call somewhere between roughly 0.35 and 0.6 s. The 263 KB run (about 2.5 s) hit the same limit.
+- **The lexer is about 25–35× faster than lowlight in the app.** In a 6 ms slice it colours about 15 KB, against about 1 KB for lowlight.
 
 ## 2. Native or off-thread highlighting the host exposes
 

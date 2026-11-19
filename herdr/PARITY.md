@@ -32,30 +32,29 @@ DOM, `Intl`, `TextEncoder`, Node or SQLite) or by gpui-kit.
 
 ## How syntax highlighting differs
 
-The mod's script engine (QuickJS-NG) runs highlight.js at about 6 ms per KB, on
-the window's thread, and Herdr interrupts script work that holds up a frame. A
-263 KB file never finished in one call in the window (probably interrupted;
-benchmarks outside Herdr show the cost growing linearly), while 50 KB pieces
-took about 330 ms each. So the mod never highlights a file whole:
+The mod's script engine (QuickJS-NG) runs on the window's thread, and Herdr kills
+a single script call after roughly half a second. Measured in the window
+(details in [`research/faster-syntax-highlighting.md`](research/faster-syntax-highlighting.md)):
+lowlight takes about 9–13 ms per KB, and the mod's own JS/TS lexer about 0.4 ms
+per KB.
 
-- Each side is cut at blank lines into chunks of about 1 KB (about 8 ms each).
-  Only chunks that hold lines the diff shows are highlighted, about 6 ms of
-  work per frame in the background, rows on screen first. Rows are drawn plain
-  until their chunk is done. Longer slices are not an option: Herdr interrupts
-  script work that holds up the window, which killed the job when chunks were
-  4 KB.
-- Each chunk is highlighted on its own. If a chunk edge falls inside a
-  construct that spans a blank line (a template string, a block comment or
-  docstring, a fenced code block), the next chunk starts outside it and is
-  coloured wrongly up to the construct's end. The web view highlights the
-  whole file.
-- After an edit to a live file, lines above and below the edited stretch keep
-  their colours while their chunks are redone, so saving doesn't flash plain.
+- **JS and TS** (`.js .mjs .cjs .ts .mts .cts`) use the hand-written lexer
+  (`src/lexer.ts`). It goes down the file carrying its state from line to line,
+  so multi-line comments and template strings are coloured right. A 34 KB file
+  takes about 12 ms. It matches lowlight on 99.9–100% of comment and string
+  characters in this repo's files. It colours a little less than lowlight:
+  no doc-comment tags, and properties stay plain unless called.
+- **Everything else, including `.jsx` / `.tsx`**, uses lowlight, cut at blank
+  lines into chunks of about 1 KB (about 8 ms each). Only chunks holding lines
+  the diff shows are highlighted, rows on screen first. If a chunk edge falls
+  inside something that spans a blank line (a block comment or docstring, a
+  fenced code block), the next chunk is coloured wrongly up to its end.
+- Either way, about 6 ms of work per frame runs in the background, and rows
+  draw plain until done. After an edit to a live file, the colours above and
+  below the edit stay while it is redone (the lexer resumes from a checkpoint
+  just above it).
 - No highlighting without full file text: files over 1 MB, files too large to
-  read, and CRLF files the mod shows from the patch alone. Lines over 2,000
-  characters stay plain.
-- A faster, resumable lexer for JS/TS is researched in
-  [`research/faster-syntax-highlighting.md`](research/faster-syntax-highlighting.md).
+  read, and CRLF files the mod shows from the patch alone.
 - The language comes from the file extension (or `Makefile`). There is no
   content-based detection, so files without a known extension stay plain.
 

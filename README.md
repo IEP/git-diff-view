@@ -87,7 +87,7 @@ The button needs a place in the window, and Herdr's own tab bar and menus can't 
 Commands for keys in `keys.json` (`"mod:git-diff": { "f7": "git-diff.next-file" }`): `git-diff.next-file`, `prev-file`, `search`, `graph`, `split`, `unified`, `wrap`, `reload`, `pick-base`, `pick-head`, `pick-pr`.
 
 Differences from the web app, from what Herdr's mod runtime allows:
-- Syntax highlighting uses the same grammars, but highlights in small chunks in the background (the mod's script engine is slow at it), so a comment or string spanning a blank line can lose its colour at a chunk edge. Files over 1 MB stay plain.
+- Syntax highlighting: JS and TS use the mod's own fast lexer; other languages use the web view's grammars in small background chunks (the mod's script engine is slow at them), so a comment or string spanning a blank line can be miscoloured at a chunk edge there. Files over 1 MB stay plain.
 - Search scans the changed lines in memory (no SQLite there); same literal, case-insensitive matching and 200,000-line limit.
 - Long lines scroll sideways with the trackpad or Shift+wheel, both sides of a split row together.
 - Local repositories refresh when files change (Herdr's folder watch, plus every 10 s); other machines every 3 s.
@@ -135,7 +135,8 @@ herdr/layout.ts          Wraps a layout's tab bar block with the Diff button (fo
 herdr/src/repo.ts        The mod's git layer: Git + GitHub services as plain async over Herdr's exec / readTextFile
 herdr/src/diffModel.ts   One file's diff as rows: hunks, expandable gaps, unified / side-by-side pairs, changed words
 herdr/src/search.ts      Search over a -U0 patch's changed lines, in memory
-herdr/src/syntax.ts      Syntax colours with lowlight, a chunk of a file at a time
+herdr/src/syntax.ts      Syntax colours: the JS/TS lexer, or lowlight a chunk at a time
+herdr/src/lexer.ts       Resumable line-at-a-time JS/TS lexer for the mod
 herdr/PARITY.md          Where the Herdr mod still differs from the web app, and why
 herdr/research/          Research notes for the mod (e.g. faster syntax highlighting)
 herdr/git-diff/          The Herdr mod (gpui-kit JS): main.js (state, toolbar button, launcher), graph, tree, diff, search, picker, ui

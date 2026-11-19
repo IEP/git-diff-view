@@ -10,6 +10,7 @@ import { expand, findLine, findPair, inlineChanges, inlineMarks, parseFilePatch,
 import { defaultRefs, openRepo, type Host } from "./repo";
 import { buildIndex, search, snippet, splitMatches } from "./search";
 import { highlightLines, languageFor, planChunks, SyntaxDoc, type SyntaxKind } from "./syntax";
+import { cloneState, initState, lexLine } from "./lexer";
 
 const lines = (n: number) => Array.from({ length: n }, (_, i) => `line ${i + 1}`);
 
@@ -322,7 +323,8 @@ describe("syntax colors", () => {
       expect(chunks[k]![0]).toBe(chunks[k - 1]![1]);
       expect(lines[chunks[k]![0] - 1]).toBe("");
     }
-    const doc = new SyntaxDoc("js", lines);
+    const doc = new SyntaxDoc("rs", lines);
+    expect(doc.lexed).toBe(false);
     expect(doc.runs(15)).toBeUndefined();
     const c = doc.chunkOf(15);
     doc.highlight(c);
@@ -340,10 +342,104 @@ test("template substitutions draw plain, not as string", () => {
 });
 
 test("an edited doc keeps the runs of lines above and below the edit", () => {
-  const before = new SyntaxDoc("js", ["let a = 1;", "", "let b = 2;", "", "let c = 3;"]);
+  const before = new SyntaxDoc("rs", ["let a = 1;", "", "let b = 2;", "", "let c = 3;"]);
   before.chunks.forEach((_, k) => before.highlight(k));
-  const after = new SyntaxDoc("js", ["let a = 1;", "", "let b = 22, d;", "", "let c = 3;"], before);
+  expect(before.runs(1)?.length).toBeGreaterThan(0);
+  const after = new SyntaxDoc("rs", ["let a = 1;", "", "let b = 22, d;", "", "let c = 3;"], before);
   expect(after.runs(1)).toEqual(before.runs(1));
   expect(after.runs(5)).toEqual(before.runs(5));
   expect(after.runs(3)).toBeUndefined();
+});
+
+describe("JS/TS lexer", () => {
+  const read = (path: string) => Bun.file(join(import.meta.dir, "../..", path)).text();
+  const kindsAt = (runs: ReadonlyArray<readonly [number, number, string]> | null | undefined, text: string) =>
+    Object.fromEntries((runs ?? []).map(([f, t, k]) => [text.slice(f, t), k]));
+
+  test("colors keywords, literals, calls, types, properties and regexes", () => {
+    const line = "const re = /a\\/b[/]/g; if (this.map.get(x) === null) return new Foo(1.5);";
+    const k = kindsAt(lexLine(line, initState()), line);
+    expect(k["const"]).toBe("keyword");
+    expect(k["/a\\/b[/]/g"]).toBe("string");
+    expect(k["this"]).toBe("attr");
+    expect(k["get"]).toBe("function"); // a property named like a keyword
+    expect(k["null"]).toBe("number");
+    expect(k["return"]).toBe("keyword");
+    expect(k["Foo"]).toBe("function");
+    expect(k["1.5"]).toBe("number");
+    expect(lexLine("a / b / c", initState())).toEqual([]); // division, not a regex
+  });
+
+  test("carries comments and template strings across lines, blank ones too", () => {
+    const lines = ["/* one", "", "two */ let s = `x ${a + `in`}", "", "y`; // end"];
+    const st = initState();
+    const runs = lines.map((l) => lexLine(l, st));
+    expect(runs[0]).toEqual([[0, 6, "comment"]]);
+    expect(runs[2]![0]).toEqual([0, 6, "comment"]);
+    expect(kindsAt(runs[2], lines[2]!)["`x "]).toBe("string");
+    expect(kindsAt(runs[2], lines[2]!)["`in`"]).toBe("string");
+    expect(runs[4]).toEqual([[0, 2, "string"], [4, 10, "comment"]]);
+  });
+
+  test("resuming from a saved state lexes like one pass", async () => {
+    const lines = (await read("herdr/git-diff/main.js")).split("\n").map(untab);
+    const whole = (() => {
+      const st = initState();
+      return lines.map((l) => lexLine(l, st));
+    })();
+    const states = [initState()];
+    const st = initState();
+    for (const l of lines) {
+      lexLine(l, st);
+      states.push(cloneState(st));
+    }
+    for (let i = 0; i < lines.length; i += 37) expect(lexLine(lines[i]!, cloneState(states[i]!))).toEqual(whole[i]!);
+  });
+
+  test("marks the same comments and strings as lowlight, much faster", async () => {
+    for (const path of ["herdr/git-diff/main.js", "src/server/Git.ts"]) {
+      const lines = (await read(path)).split("\n").map(untab);
+      const lang = path.endsWith(".ts") ? "ts" : "js";
+      let t = performance.now();
+      const slow = highlightLines(lang, lines);
+      const lowlightMs = performance.now() - t;
+      t = performance.now();
+      const st = initState();
+      const fast = lines.map((l) => lexLine(l, st));
+      const lexMs = performance.now() - t;
+      const cls = (runs: ReadonlyArray<readonly [number, number, string]> | null | undefined, i: number) => {
+        const k = runs?.find(([f, to]) => i >= f && i < to)?.[2];
+        return k === "comment" || k === "string" ? k : "-";
+      };
+      let total = 0;
+      let same = 0;
+      lines.forEach((l, n) => {
+        for (let i = 0; i < l.length; i++) {
+          if (l[i] === " ") continue;
+          total++;
+          if (cls(slow[n], i) === cls(fast[n], i)) same++;
+        }
+      });
+      expect(same / total).toBeGreaterThan(0.995);
+      expect(lowlightMs / lexMs).toBeGreaterThan(5); // ~20-35x measured; loose against timer noise
+    }
+  });
+
+  test("a JS doc lexes down the file and resumes above an edit", () => {
+    const lines = Array.from({ length: 300 }, (_, i) => (i === 150 ? "const s = `a" : i === 151 ? "b`;" : `let v${i} = ${i};`));
+    const doc = new SyntaxDoc("ts", lines);
+    expect(doc.lexed).toBe(true);
+    expect(doc.needs(10)).toBe(true);
+    while (doc.needs(300)) doc.work(300, Date.now() + 1000);
+    expect(doc.runs(152)?.[0]).toEqual([0, 2, "string"]);
+    const edited = lines.slice();
+    edited[200] = "let changed = 1;";
+    const after = new SyntaxDoc("ts", edited, doc);
+    expect(after.runs(1)).toEqual(doc.runs(1)); // shown at once
+    expect(after.needs(100)).toBe(false); // above the checkpoint before line 201: kept
+    expect(after.needs(201)).toBe(true);
+    while (after.needs(300)) after.work(300, Date.now() + 1000);
+    expect(after.runs(201)?.[0]).toEqual([0, 3, "keyword"]);
+    expect(after.runs(152)).toEqual(doc.runs(152));
+  });
 });

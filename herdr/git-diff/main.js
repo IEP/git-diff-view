@@ -465,9 +465,10 @@ export default class GitDiff extends View {
   }
 
   /**
-   * Highlight, in the background, the chunks behind the lines the diff shows: about
-   * 6 ms of work per tick, then a frame's rest, so the window keeps responding (Herdr
-   * interrupts long script work). Rows on screen go first (`diff.js` records them as
+   * Color, in the background, the lines the diff shows (JS/TS by the lexer, top to
+   * bottom; other languages by lowlight, a chunk at a time): about 6 ms of work per
+   * tick, then a frame's rest, so the window keeps responding (Herdr interrupts long
+   * script work). Rows on screen go first (`diff.js` records them as
    * it draws), then the rest of the diff. Rows draw plain until their chunk is done.
    */
   startSyntax(cx) {
@@ -476,12 +477,10 @@ export default class GitDiff extends View {
     // A run that was interrupted mid-chunk never finished: its beat goes stale.
     if (this.syntaxRun && Date.now() - this.syntaxRun.beat < 1000) return;
     const run = (this.syntaxRun = { beat: Date.now() });
-    // The chunk behind a drawn row, by the side its colors come from.
+    // A drawn row's line still to color, on the side its colors come from.
     const job = (side, n) => {
       const doc = f.syntax[side]?.doc;
-      if (!doc || n == null) return null;
-      const chunk = doc.chunkOf(n);
-      return doc.isDone(chunk) ? null : [doc, chunk];
+      return doc && n != null && doc.needs(n) ? [doc, n] : null;
     };
     const ofLine = (l) => (l.kind === "del" ? job("old", l.old) : job("new", l.new));
     const ofRow = (r) => (r.t === "line" ? ofLine(r.line) : r.t === "pair" ? (r.left?.kind === "del" ? job("old", r.left.n) : null) ?? (r.right ? job("new", r.right.n) : null) : null);
@@ -508,7 +507,7 @@ export default class GitDiff extends View {
           const start = Date.now();
           let did = false;
           for (let j = next(); j && (!did || Date.now() - start < 6); j = next()) {
-            j[0].highlight(j[1]);
+            j[0].work(j[1], start + 6);
             did = true;
             run.beat = Date.now();
           }
