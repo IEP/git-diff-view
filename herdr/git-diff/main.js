@@ -465,42 +465,60 @@ export default class GitDiff extends View {
   }
 
   /**
-   * Highlight, in the background, the chunks behind the lines the diff shows: one chunk
-   * (a few tens of ms) per tick, so the window keeps responding. Rows are drawn plain
-   * until their chunk is done. Runs again whenever the rows change (a gap opened).
+   * Highlight, in the background, the chunks behind the lines the diff shows: about
+   * 6 ms of work per tick, then a frame's rest, so the window keeps responding (Herdr
+   * interrupts long script work). Rows on screen go first (`diff.js` records them as
+   * it draws), then the rest of the diff. Rows draw plain until their chunk is done.
    */
   startSyntax(cx) {
     const f = this.file;
-    const built = this.rowsCache;
-    if (!f?.syntax || this.syntaxBusy || !built || built.file !== f || this.syntaxScanned === built) return;
-    this.syntaxScanned = built;
-    const jobs = [];
-    const seen = new Set();
-    for (const r of built.unified) {
-      if (r.t !== "line") continue;
-      // Removed lines come from the base side; added and unchanged ones from the head side.
-      const side = r.line.kind === "del" ? "old" : "new";
+    if (!f?.syntax || !this.rowsCache || this.rowsCache.file !== f) return;
+    // A run that was interrupted mid-chunk never finished: its beat goes stale.
+    if (this.syntaxRun && Date.now() - this.syntaxRun.beat < 1000) return;
+    const run = (this.syntaxRun = { beat: Date.now() });
+    // The chunk behind a drawn row, by the side its colors come from.
+    const job = (side, n) => {
       const doc = f.syntax[side]?.doc;
-      if (!doc) continue;
-      const chunk = doc.chunkOf(side === "old" ? r.line.old : r.line.new);
-      if (doc.isDone(chunk) || seen.has(`${side}${chunk}`)) continue;
-      seen.add(`${side}${chunk}`);
-      jobs.push([doc, chunk]);
+      if (!doc || n == null) return null;
+      const chunk = doc.chunkOf(n);
+      return doc.isDone(chunk) ? null : [doc, chunk];
+    };
+    const ofLine = (l) => (l.kind === "del" ? job("old", l.old) : job("new", l.new));
+    const ofRow = (r) => (r.t === "line" ? ofLine(r.line) : r.t === "pair" ? (r.left?.kind === "del" ? job("old", r.left.n) : null) ?? (r.right ? job("new", r.right.n) : null) : null);
+    const next = () => {
+      const built = this.rowsCache;
+      if (this.file !== f || !built || built.file !== f) return null;
+      for (const r of this.diffVisible ?? []) {
+        const j = ofRow(r);
+        if (j) return j;
+      }
+      for (const r of built.unified) {
+        const j = r.t === "line" ? ofLine(r.line) : null;
+        if (j) return j;
+      }
+      return null;
+    };
+    if (!next()) {
+      this.syntaxRun = null;
+      return;
     }
-    if (!jobs.length) return;
-    this.syntaxBusy = true;
     cx.spawn(async (cx) => {
       try {
-        for (const [doc, chunk] of jobs) {
-          if (this.file !== f) break;
-          doc.highlight(chunk);
+        for (;;) {
+          const start = Date.now();
+          let did = false;
+          for (let j = next(); j && (!did || Date.now() - start < 6); j = next()) {
+            j[0].highlight(j[1]);
+            did = true;
+            run.beat = Date.now();
+          }
+          if (!did || this.syntaxRun !== run) break;
           cx.notify();
-          await cx.sleep(1);
+          await cx.sleep(16);
+          run.beat = Date.now();
         }
       } finally {
-        this.syntaxBusy = false;
-        this.syntaxScanned = null; // the rows may have changed meanwhile: look again
-        cx.notify();
+        if (this.syntaxRun === run) this.syntaxRun = null;
       }
     });
   }

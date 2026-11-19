@@ -32,14 +32,18 @@ DOM, `Intl`, `TextEncoder`, Node or SQLite) or by gpui-kit.
 
 ## How syntax highlighting differs
 
-The mod's script engine runs highlight.js at about 6 ms per KB, on the window's
-thread, and slows down sharply on large inputs: a 263 KB file did not finish in
-one call within about 45 seconds, while 50 KB pieces took about 330 ms each. So
-the mod never highlights a file whole:
+The mod's script engine (QuickJS-NG) runs highlight.js at about 6 ms per KB, on
+the window's thread, and Herdr interrupts script work that holds up a frame. A
+263 KB file never finished in one call in the window (probably interrupted;
+benchmarks outside Herdr show the cost growing linearly), while 50 KB pieces
+took about 330 ms each. So the mod never highlights a file whole:
 
-- Each side is cut at blank lines into chunks of about 4 KB. Only chunks that
-  hold lines the diff shows are highlighted, one per tick in the background,
-  and rows are drawn plain until their chunk is done.
+- Each side is cut at blank lines into chunks of about 1 KB (about 8 ms each).
+  Only chunks that hold lines the diff shows are highlighted, about 6 ms of
+  work per frame in the background, rows on screen first. Rows are drawn plain
+  until their chunk is done. Longer slices are not an option: Herdr interrupts
+  script work that holds up the window, which killed the job when chunks were
+  4 KB.
 - Each chunk is highlighted on its own. If a chunk edge falls inside a
   construct that spans a blank line (a template string, a block comment or
   docstring, a fenced code block), the next chunk starts outside it and is
@@ -50,6 +54,8 @@ the mod never highlights a file whole:
 - No highlighting without full file text: files over 1 MB, files too large to
   read, and CRLF files the mod shows from the patch alone. Lines over 2,000
   characters stay plain.
+- A faster, resumable lexer for JS/TS is researched in
+  [`research/faster-syntax-highlighting.md`](research/faster-syntax-highlighting.md).
 - The language comes from the file extension (or `Makefile`). There is no
   content-based detection, so files without a known extension stay plain.
 

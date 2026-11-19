@@ -137,6 +137,7 @@ herdr/src/diffModel.ts   One file's diff as rows: hunks, expandable gaps, unifie
 herdr/src/search.ts      Search over a -U0 patch's changed lines, in memory
 herdr/src/syntax.ts      Syntax colours with lowlight, a chunk of a file at a time
 herdr/PARITY.md          Where the Herdr mod still differs from the web app, and why
+herdr/research/          Research notes for the mod (e.g. faster syntax highlighting)
 herdr/git-diff/          The Herdr mod (gpui-kit JS): main.js (state, toolbar button, launcher), graph, tree, diff, search, picker, ui
 ```
 

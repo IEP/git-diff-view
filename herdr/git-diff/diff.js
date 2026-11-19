@@ -131,8 +131,11 @@ function body(view, t, f) {
         view.diffX = Math.min(Math.max(0, view.diffX - dx), maxX);
         cx.notify();
       })
-      .child(fill(v_virtual_list("diff-rows", rows.length, sizes, (i) => rowKey(rows[i], i), safeRows((range) =>
-        rows.slice(range.start, range.end).map((r, k) => draw(r, range.start + k)))).track_scroll(view.diffScroll).on_item_click((key, cx) => {
+      .child(fill(v_virtual_list("diff-rows", rows.length, sizes, (i) => rowKey(rows[i], i), safeRows((range) => {
+        // What's on screen: the syntax job highlights these rows first.
+        view.diffVisible = rows.slice(range.start, range.end);
+        return view.diffVisible.map((r, k) => draw(r, range.start + k));
+      })).track_scroll(view.diffScroll).on_item_click((key, cx) => {
         if (!key.startsWith("g")) return;
         const r = rows.find((x) => x.t === "gap" && `g${x.gap.key}` === key);
         if (r) view.setExpanded(cx, r.gap, gapZone(r, view.diffDownX ?? 0));

@@ -2,10 +2,11 @@
  * Syntax colors for the Herdr mod's diff, with lowlight (highlight.js grammars, as the
  * web view's `@git-diff-view` uses).
  *
- * The mod's script engine is slow at this (about 6 ms per KB, on the window's thread)
- * and goes superlinear on long inputs, so a file is never highlighted whole. It is cut
- * at blank lines into chunks of a few KB, and only the chunks holding lines the diff
- * shows are highlighted, one at a time, by the caller. A construct that spans a blank
+ * The mod's script engine is slow at this (about 6 ms per KB, on the window's thread),
+ * and Herdr interrupts script work that holds up a frame, so a file is never
+ * highlighted whole. It is cut
+ * at blank lines into chunks of about a KB, and only the chunks holding lines the diff
+ * shows are highlighted, a few milliseconds' worth per tick, by the caller. A construct that spans a blank
  * line at a chunk edge (a template string, a block comment) can lose its color there.
  */
 import { createLowlight, common } from "lowlight";
@@ -16,8 +17,10 @@ export type SyntaxKind = "keyword" | "string" | "number" | "comment" | "function
 /** A colored run `[from, to, kind]` on a line's drawn (untabbed) text. */
 export type SyntaxRun = readonly [number, number, SyntaxKind];
 
-const CHUNK_CHARS = 4_000;
-const CHUNK_MAX = 8_000;
+// ~1.2 KB takes about 8 ms in the mod: short enough that a slice never holds up a
+// frame (Herdr interrupts long-running script work, and the job with it).
+const CHUNK_CHARS = 1_200;
+const CHUNK_MAX = 2_500;
 /** Files over this are left plain: highlighting all that is shown would take too long. */
 export const MAX_SYNTAX_CHARS = 1_000_000;
 /** Lines over this are left plain (minified code, data). */
