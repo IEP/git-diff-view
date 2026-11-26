@@ -12,12 +12,14 @@ import { buildIndex, search } from "../../herdr/src/search";
 import { languageFor, MAX_SYNTAX_CHARS, SyntaxDoc } from "../../herdr/src/syntax";
 import { bunHost } from "./host";
 import { diffRows, filteredTree, type DiffRows, initialState, layoutFor, pickerItems, searchRows, selectedFile, treeRows, type FileView, type Mode, type State, type SyntaxSide } from "./state";
-import { openTerminal, type Key, type Terminal } from "./term";
-import { frame } from "./view";
+import { openTerminal, parseMouse, type Key, type Terminal } from "./term";
+import { frame, headerAction } from "./view";
 
 const REFRESH_MS = 2000;
 const SEARCH_LINES = 200_000;
 const SEARCH_DELAY_MS = 120;
+/** Rows a wheel notch scrolls. */
+const WHEEL_LINES = 3;
 /** Time per frame spent colouring the rows on screen; the rest follows on the next tick. */
 const SYNTAX_BUDGET_MS = 30;
 
@@ -500,6 +502,8 @@ export class App {
     const s = this.state;
     s.message = null;
     if (k === "ctrl+c") return this.quit();
+    const m = parseMouse(k);
+    if (m) return this.mouse(m.event, m.x - 1, m.y - 1);
     if (s.fatal) {
       if (k === "q" || k === "escape") this.quit();
       return;
@@ -581,6 +585,109 @@ export class App {
     }
     if (s.focus === "tree") return s.search.open ? this.hitsKey(k) : this.treeKey(k);
     return this.diffKey(k);
+  }
+
+  /** A click or wheel turn at a 0-based cell: acts on whatever is drawn there. */
+  private mouse(event: string, x: number, y: number): void {
+    const s = this.state;
+    const cols = this.term?.cols ?? this.size?.cols ?? 80;
+    const rows = this.term?.rows ?? this.size?.rows ?? 24;
+    const L = layoutFor(s, cols, rows);
+    const wheel = event === "wheelup" ? -WHEEL_LINES : event === "wheeldown" ? WHEEL_LINES : 0;
+    const click = event === "click";
+    // A click elsewhere finishes typing in the filter or search line, as Enter would.
+    if (click && s.filtering) this.filterKey("enter");
+    if (click && s.search.editing) this.searchKey("enter");
+    if (s.fatal) return;
+    if (s.help) {
+      if (click) s.help = false;
+      return;
+    }
+    const bodyRow = y - 1;
+    if (s.picker) {
+      const p = s.picker;
+      const n = pickerItems(s, p).length;
+      if (wheel) {
+        p.cursor = clampMove(p.cursor, wheel, n);
+        p.scroll = Math.max(0, Math.min(Math.max(0, n - (L.body - 3)), p.scroll + wheel));
+      } else if (click && y === 0) s.picker = null;
+      else if (click && bodyRow >= 3 && bodyRow < L.body) {
+        const i = p.scroll + bodyRow - 3;
+        if (i < n) {
+          p.cursor = i;
+          this.pickerKey("enter");
+        }
+      }
+      return;
+    }
+    if (y === 0) {
+      if (!click) return;
+      const action = headerAction(s, cols, x);
+      if (action === "mode") this.key("s");
+      else if (action === "base") this.key("b");
+      else if (action === "head") this.key("h");
+      else if (action === "pr") this.key("p");
+      return;
+    }
+    if (bodyRow < 0 || bodyRow >= L.body) return;
+
+    if (L.side > 0 && x < L.side) {
+      if (s.search.open) {
+        const ss = s.search;
+        const srows = searchRows(ss.result);
+        if (wheel) {
+          ss.scroll = Math.max(0, Math.min(Math.max(0, srows.length - (L.body - 2)), ss.scroll + wheel));
+          // Keep the cursor among the rows on screen, or keepVisible scrolls back to it.
+          const shown = srows.slice(ss.scroll, ss.scroll + L.body - 2).filter((r) => r.t === "hit").map((r) => (r as { i: number }).i);
+          if (shown.length && !shown.includes(ss.cursor)) ss.cursor = wheel > 0 ? shown[0]! : shown[shown.length - 1]!;
+          return;
+        }
+        s.focus = "tree";
+        const row = srows[ss.scroll + bodyRow - 2];
+        if (click && row?.t === "hit") {
+          ss.cursor = row.i;
+          this.openHit(ss.result!.hits[row.i]!);
+          s.focus = "tree";
+        }
+        return;
+      }
+      const trows = treeRows(s);
+      if (wheel) {
+        const h = L.body - 1;
+        s.treeScroll = Math.max(0, Math.min(Math.max(0, trows.length - h), s.treeScroll + wheel));
+        s.treeCursor = Math.max(s.treeScroll, Math.min(s.treeScroll + h - 1, s.treeCursor));
+        return;
+      }
+      s.focus = "tree";
+      const i = s.treeScroll + bodyRow - 1;
+      const row = trows[i];
+      if (!click || bodyRow === 0 || !row) return;
+      s.treeCursor = i;
+      if (row.node.kind === "file") this.select(row.node.path);
+      else this.treeKey("enter");
+      return;
+    }
+
+    if (x >= L.diffLeft && L.diffWidth > 0) {
+      const built = diffRows(s);
+      if (!built) {
+        if (click) s.focus = "diff";
+        return;
+      }
+      if (wheel) {
+        const h = L.diffBody;
+        s.diffScroll = Math.max(0, Math.min(Math.max(0, built.rows.length - h), s.diffScroll + wheel));
+        s.diffCursor = Math.max(s.diffScroll, Math.min(s.diffScroll + h - 1, s.diffCursor));
+        return;
+      }
+      if (!click) return;
+      s.focus = "diff";
+      const i = s.diffScroll + bodyRow - 1;
+      const row = built.rows[i];
+      if (bodyRow === 0 || !row) return;
+      s.diffCursor = i;
+      if (row.t === "gap") this.expandGap(row.gap, "all");
+    }
   }
 
   private moveBy(k: Key, page: number): number | null {

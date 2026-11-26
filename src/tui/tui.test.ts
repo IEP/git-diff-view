@@ -17,6 +17,11 @@ describe("decodeKeys", () => {
     expect(decodeKeys("\x1b")).toEqual(["escape"]);
     expect(decodeKeys("日本")).toEqual(["日", "本"]);
   });
+  test("mouse reports become clicks and wheel turns; releases are dropped", () => {
+    expect(decodeKeys("\x1b[<0;12;5M\x1b[<0;12;5m")).toEqual(["mouse click 12 5"]);
+    expect(decodeKeys("\x1b[<64;3;4M\x1b[<69;3;4M")).toEqual(["mouse wheelup 3 4", "mouse wheeldown 3 4"]);
+    expect(decodeKeys("\x1b[<2;1;1M")).toEqual([]);
+  });
   test("pasted text arrives as characters, without its line breaks", () => {
     expect(decodeKeys("\x1b[200~a\nb\x1b[201~")).toEqual(["a", " ", "b"]);
   });
@@ -132,6 +137,29 @@ describe("terminal viewer (real repository)", () => {
     expect(app.state.compare?.files.map((f) => f.path)).toContain("aaa.txt");
     expect(row()).toBe(3); // still new.txt, one row lower
     await rm(join(dir, "aaa.txt"));
+  });
+
+  test("clicks open files, gaps and pickers; the wheel scrolls", async () => {
+    const app = await open();
+    // Tree rows start on screen row 3 (header, pane title): row 4 is app.ts.
+    app.key("mouse click 5 4");
+    expect(app.state.selected).toBe("app.ts");
+    await app.loadFile();
+    // The diff's first row (screen row 3) is the gap above the change: a click opens it.
+    app.key("mouse click 60 3");
+    expect(app.state.focus).toBe("diff");
+    expect(app.frame(100, 30).map(plain).join("\n")).toContain("const v0 = 0;");
+    app.key("mouse wheeldown 60 10");
+    app.frame(100, 30);
+    expect(app.state.diffScroll).toBe(3);
+    // The header's head label opens its picker; clicking an entry picks it.
+    const head = plain(app.frame(100, 30)[0]!).indexOf("Working tree");
+    app.key(`mouse click ${head + 2} 1`);
+    expect(app.state.picker?.which).toBe("head");
+    app.frame(100, 30);
+    app.key("mouse click 10 5"); // screen row 5 is the first entry: Working tree
+    expect(app.state.picker).toBeNull();
+    expect(app.state.head).toBe(":worktree");
   });
 
   test("narrow terminals show one pane at a time", async () => {

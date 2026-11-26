@@ -126,6 +126,9 @@ It has the file tree and filter, side-by-side or unified diffs with syntax colou
 | `/`, `n N` | search the changed lines, next / previous hit |
 | `f` | filter files by path |
 | `s`, `r`, `q` | side by side ↔ unified, reload, quit |
+| mouse | click a file, a `⋯` row, a search hit or a picker entry; click the base / head (or the PR) in the top bar to change it, the layout name to switch it; the wheel scrolls the pane under the pointer |
+
+While it runs, the terminal sends mouse clicks to the viewer, so selecting text needs the terminal's override (usually Shift-drag, Option-drag in iTerm2 and Terminal.app).
 
 It reuses the Herdr mod's git layer and diff model (`herdr/src`) on a local process runner, and reads working-tree files through the server's guarded `readDisk`, so the same read-only rules apply. Text from the repository has its control characters drawn as visible symbols (`␛`), so a file can't send escape sequences to your terminal. The commit graph isn't in the terminal version yet. Colours use the 256-colour palette and are tuned for dark themes.
 

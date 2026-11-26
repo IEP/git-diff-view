@@ -42,25 +42,45 @@ export function frame(state: State, cols: number, rows: number): Array<string> {
 
 // ---------------------------------------------------------------- header / footer
 
-function header(state: State, cols: number): string {
+/** What clicking a part of the header does. */
+export type HeaderAction = "base" | "head" | "pr" | "mode";
+type HeaderSpan = Span & { readonly action?: HeaderAction };
+
+function headerParts(state: State): { left: Array<HeaderSpan>; right: string } {
   const name = state.info?.name ?? state.root.split("/").pop() ?? "";
-  const spans: Array<Span> = [{ text: ` ${name} `, style: { ...bar, bold: true, fg: C.accent } }];
+  const left: Array<HeaderSpan> = [{ text: ` ${name} `, style: { ...bar, bold: true, fg: C.accent } }];
   if (state.pr !== null) {
     const title = state.pull ? ` ${state.pull.title}` : "";
-    spans.push({ text: ` #${state.pr}${title} `, style: { ...bar, bold: true } });
-    if (state.pull) spans.push({ text: ` ${state.pull.baseRef} ← ${state.pull.headRef} `, style: { ...bar, fg: C.dim } });
+    left.push({ text: ` #${state.pr}${title} `, style: { ...bar, bold: true }, action: "pr" });
+    if (state.pull) left.push({ text: ` ${state.pull.baseRef} ← ${state.pull.headRef} `, style: { ...bar, fg: C.dim }, action: "pr" });
   } else if (state.base || state.head) {
-    spans.push({ text: ` ${revLabel(state.base)} `, style: { ...bar, bold: true } }, { text: "→", style: { ...bar, fg: C.dim } }, { text: ` ${revLabel(state.head)} `, style: { ...bar, bold: true } });
+    left.push({ text: ` ${revLabel(state.base)} `, style: { ...bar, bold: true }, action: "base" }, { text: "→", style: { ...bar, fg: C.dim } }, { text: ` ${revLabel(state.head)} `, style: { ...bar, bold: true }, action: "head" });
   }
   const files = state.compare?.files;
   if (files) {
     const add = files.reduce((n, f) => n + f.additions, 0);
     const del = files.reduce((n, f) => n + f.deletions, 0);
-    spans.push({ text: `  ${files.length} file${files.length === 1 ? "" : "s"} `, style: { ...bar, fg: C.dim } }, { text: `+${add}`, style: { ...bar, fg: C.add } }, { text: " ", style: bar }, { text: `−${del}`, style: { ...bar, fg: C.del } });
+    left.push({ text: `  ${files.length} file${files.length === 1 ? "" : "s"} `, style: { ...bar, fg: C.dim } }, { text: `+${add}`, style: { ...bar, fg: C.add } }, { text: " ", style: bar }, { text: `−${del}`, style: { ...bar, fg: C.del } });
   }
-  const right = ` ${state.loading ? "loading… " : ""}${state.mode === "split" ? "side by side" : "unified"} `;
-  const left = fit(spans, Math.max(0, cols - width(right)), bar);
-  return left + fit([{ text: right, style: { ...bar, fg: C.dim } }], Math.min(cols, width(right)), bar);
+  return { left, right: ` ${state.loading ? "loading… " : ""}${state.mode === "split" ? "side by side" : "unified"} ` };
+}
+
+function header(state: State, cols: number): string {
+  const { left, right } = headerParts(state);
+  return fit(left, Math.max(0, cols - width(right)), bar) + fit([{ text: right, style: { ...bar, fg: C.dim } }], Math.min(cols, width(right)), bar);
+}
+
+/** The header action under a 0-based column, laid out exactly as `header` draws it. */
+export function headerAction(state: State, cols: number, x: number): HeaderAction | null {
+  const { left, right } = headerParts(state);
+  if (x >= cols - width(right)) return "mode";
+  let at = 0;
+  for (const span of left) {
+    const w = width(clean(span.text));
+    if (x >= at && x < at + w) return span.action ?? null;
+    at += w;
+  }
+  return null;
 }
 
 function footer(state: State, cols: number): string {
@@ -349,6 +369,7 @@ const HELP: ReadonlyArray<readonly [string, string]> = [
   ["s", "side by side ↔ unified"],
   ["r", "reload now (live comparisons also refresh every 2 s)"],
   ["q  ctrl+c", "quit"],
+  ["mouse", "click a file, a ⋯ row, a search hit or a picker entry; click the revisions or the layout in the top bar; the wheel scrolls"],
   ["", ""],
   ["", "File list"],
   ["↑ ↓  j k", "move · Home / End"],
