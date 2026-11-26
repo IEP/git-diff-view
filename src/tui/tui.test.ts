@@ -229,6 +229,17 @@ describe("terminal viewer (real repository)", () => {
     for (const row of app.frame(100, 30)) expect(Bun.stringWidth(plain(row))).toBe(100);
   });
 
+  test("syntax colours arrive from the worker after the file draws", async () => {
+    const app = await open();
+    app.select("app.ts");
+    await app.loadFile();
+    for (let i = 0; i < 100 && !app.state.file?.syntax; i++) await Bun.sleep(20);
+    const runs = app.state.file?.syntax?.new?.runs;
+    expect(runs?.[0]?.some((r) => r[2] === "keyword")).toBe(true); // "const"
+    // Keyword colour (256-colour 176) is on screen.
+    expect(app.frame(100, 30).join("\n")).toContain("38;5;176");
+  });
+
   test("narrow terminals show one pane at a time", async () => {
     const app = await open(50, 20);
     expect(app.frame(50, 20).map(plain).join("\n")).toContain("new.txt");

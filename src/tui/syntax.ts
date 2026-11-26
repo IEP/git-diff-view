@@ -1,8 +1,8 @@
 /**
  * Syntax colours for the terminal diff: the highlight.js grammars the web view uses
  * (through lowlight), reduced to a few kinds of token. A file is highlighted whole, in
- * one pass, so comments and strings spanning lines are coloured right; at about 1 ms per
- * KB in Bun that's done before the first paint for all but the largest files.
+ * one pass, so comments and strings spanning lines are coloured right. That takes about
+ * 1 ms per KB, so the viewer runs it in a worker (`syntaxWorker.ts`).
  */
 import { common, createLowlight } from "lowlight";
 
@@ -12,8 +12,8 @@ export type SyntaxKind = "keyword" | "string" | "number" | "comment" | "function
 /** A coloured run `[from, to, kind]` on a line's drawn (untabbed) text. */
 export type SyntaxRun = readonly [number, number, SyntaxKind];
 
-/** Files over this stay plain: highlighting them would hold up the screen. */
-export const MAX_SYNTAX_CHARS = 512 * 1024;
+/** The server reads files up to 2 MiB; nothing larger reaches the viewer anyway. */
+export const MAX_SYNTAX_CHARS = 2 * 1024 * 1024;
 /** Lines over this are left plain (minified code, data). */
 const MAX_LINE = 2_000;
 

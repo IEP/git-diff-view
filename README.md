@@ -103,7 +103,7 @@ It has the file tree and filter, side-by-side or unified diffs with syntax colou
 
 While it runs, the terminal sends mouse clicks to the viewer, so selecting text needs the terminal's override (usually Shift-drag, Option-drag in iTerm2 and Terminal.app).
 
-It runs the server's own Git, GitHub and search services in-process (no HTTP), so the same read-only rules apply, and search uses the same in-memory SQLite index. Syntax colours come from the same highlight.js grammars as the web view, a whole file at a time (files over 512 KB stay plain). Text from the repository has its control characters drawn as visible symbols (`␛`), so a file can't send escape sequences to your terminal. The commit graph isn't in the terminal version yet. Colours use the 256-colour palette and are tuned for dark themes.
+It runs the server's own Git, GitHub and search services in-process (no HTTP), so the same read-only rules apply, and search uses the same in-memory SQLite index. Syntax colours come from the same highlight.js grammars as the web view, a whole file at a time, in a background worker: a file shows at once and its colours follow (about half a second for 1.5 MB). Every file the viewer can open (up to 2 MiB) gets them. Text from the repository has its control characters drawn as visible symbols (`␛`), so a file can't send escape sequences to your terminal. The commit graph isn't in the terminal version yet. Colours use the 256-colour palette and are tuned for dark themes.
 
 ## GitHub pull requests
 
@@ -145,6 +145,7 @@ src/tui/ansi.ts          Styled spans fitted to display columns; control charact
 src/tui/git.ts           The server's Git / GitHub / DiffSearch services as promises, for the terminal viewer
 src/tui/diffModel.ts     One file's diff as rows: hunks, expandable gaps, unified / side-by-side pairs, changed words
 src/tui/syntax.ts        Syntax colours: lowlight over a whole file, reduced to a few token kinds
+src/tui/syntaxWorker.ts  Runs syntax.ts off the main thread (an extra entrypoint in build.ts)
 ```
 
 Tests: `bun test`

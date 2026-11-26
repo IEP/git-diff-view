@@ -117,7 +117,7 @@ For more information, read the Bun API docs in `node_modules/bun-types/docs/**.m
 ## Terminal viewer (`src/tui/`)
 
 - `git-diff-view --tui` (flags in `src/index.ts`) runs the viewer in the terminal instead of starting the server. It calls the server's `Git`, `GitHub` and `DiffSearch` services in-process through `src/tui/git.ts` (an Effect `ManagedRuntime`), so the read-only allow-list, the working-tree gating and the SQLite search index are the server's. Fix git behaviour in `src/server/`, never in a TUI copy.
-- Syntax colours (`src/tui/syntax.ts`) highlight a whole file in one lowlight call (~1 ms/KB in Bun), after the file first draws plain; files over `MAX_SYNTAX_CHARS` stay plain.
+- Syntax colours (`src/tui/syntax.ts`) highlight a whole file in one lowlight call (~1 ms/KB in Bun) inside a Worker (`syntaxWorker.ts`), after the file first draws plain. `MAX_SYNTAX_CHARS` matches the server's 2 MiB read limit. The worker must stay in `build.ts`'s entrypoints: in the compiled binary `import.meta.url` is the bundle root, so `workerUrl()` in `app.ts` uses `./tui/syntaxWorker.ts` there. If the worker fails, `app.ts` falls back to highlighting in-process.
 - `view.ts` and `state.ts` stay pure (no TTY, no git) so `src/tui/tui.test.ts` can check whole frames. Every string reaches the screen through `fit()` in `ansi.ts`, which turns control characters into visible symbols. Never write repository text to stdout any other way.
 - Test it in a real terminal with an unused Rex tab: `rex window new tui --focus=false --keep-open -c <repo> -- bun <this repo>/src/index.ts --tui`, then `rex send` / `rex send-key` and `rex capture`.
 

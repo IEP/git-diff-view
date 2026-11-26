@@ -11,7 +11,8 @@ const outfile = install
   : "./dist/git-diff-view";
 
 const result = await Bun.build({
-  entrypoints: ["./src/index.ts"],
+  // The terminal viewer highlights in a worker, which must be compiled in too.
+  entrypoints: ["./src/index.ts", "./src/tui/syntaxWorker.ts"],
   compile: { outfile },
   plugins: [tailwind],
   minify: true,

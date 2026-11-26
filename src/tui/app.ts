@@ -9,7 +9,7 @@ import type { SearchHit } from "@/shared/api";
 import { defaultRefs } from "@/lib/refs";
 import { expand, findLine, findPair, parseFilePatch, splitLines, untab, type Gap } from "./diffModel";
 import { openRepo, type Repo } from "./git";
-import { highlightFile, languageFor } from "./syntax";
+import { highlightFile, languageFor, MAX_SYNTAX_CHARS } from "./syntax";
 import { diffRows, filteredTree, type DiffRows, initialState, sideWidth, layoutFor, pickerItems, searchRows, selectedFile, treeRows, type FileView, type Mode, type State, type SyntaxSide } from "./state";
 import { openTerminal, parseMouse, type Key, type Terminal } from "./term";
 import { frame, gapAction, headerAction } from "./view";
@@ -47,6 +47,10 @@ export class App {
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
   private renderQueued = false;
   private pendingJump: SearchHit | null = null;
+  private worker: Worker | null = null;
+  private workerFailed = false;
+  private highlights = new Map<number, { resolve: (runs: SyntaxSide["runs"] | null) => void; lang: string; lines: Array<string> }>();
+  private highlightId = 0;
 
   constructor(
     root: string,
@@ -98,6 +102,7 @@ export class App {
 
   quit(): void {
     if (this.timer) clearInterval(this.timer);
+    this.worker?.terminate();
     void this.repo?.dispose();
     this.term?.restore();
     this.done();
@@ -195,12 +200,12 @@ export class App {
         const file: FileView = { key, path: f.path, data, parsed: parseFilePatch(data.patch), oldLines: splitLines(data.oldContent), newLines: splitLines(data.newContent), syntax: null };
         s.file = file;
         s.fileError = null;
-        // Draw plain first, colour right after: a large file takes a moment to highlight.
-        setTimeout(() => {
+        // Draw plain first; colours arrive from the worker (a large file takes a moment).
+        void this.syntaxFor(f.path, data, prev).then((syntax) => {
           if (s.file !== file) return;
-          file.syntax = syntaxFor(f.path, data, prev);
+          file.syntax = syntax;
           this.render();
-        }, 0);
+        });
       }
       this.applyJump();
     } catch (e) {
@@ -212,6 +217,53 @@ export class App {
       s.fileLoading = false;
       this.render();
     }
+  }
+
+  /**
+   * Syntax runs for a file's two sides, or null without a known language. A side whose
+   * text didn't change keeps its runs, so a live refresh re-highlights only what moved.
+   */
+  private async syntaxFor(path: string, data: { oldContent: string | null; newContent: string | null }, prev: FileView["syntax"]): Promise<FileView["syntax"]> {
+    const lang = languageFor(path);
+    if (!lang) return null;
+    const side = async (content: string | null, before: SyntaxSide | null | undefined): Promise<SyntaxSide | null> => {
+      if (content === null || content.length > MAX_SYNTAX_CHARS) return null;
+      if (before?.source === content) return before;
+      const runs = await this.highlight(lang, splitLines(content)!.map(untab));
+      return runs ? { source: content, runs } : null;
+    };
+    const [old, next] = await Promise.all([side(data.oldContent, prev?.old), side(data.newContent, prev?.new)]);
+    return { old, new: next };
+  }
+
+  /**
+   * Highlight lines in the worker (started on first use). If the worker can't start, this
+   * and every later file are highlighted here instead: slower to show, never uncoloured.
+   */
+  private highlight(lang: string, lines: Array<string>): Promise<SyntaxSide["runs"] | null> {
+    if (this.workerFailed) return Promise.resolve(highlightFile(lang, lines));
+    if (!this.worker) {
+      const w = new Worker(workerUrl());
+      // Bun's Worker (the DOM type lacks unref): an idle one doesn't hold the process open.
+      (w as unknown as { unref(): void }).unref();
+      w.onmessage = (e: MessageEvent<{ id: number; runs: SyntaxSide["runs"] | null }>) => {
+        this.highlights.get(e.data.id)?.resolve(e.data.runs);
+        this.highlights.delete(e.data.id);
+      };
+      w.onerror = () => {
+        this.workerFailed = true;
+        w.terminate();
+        this.worker = null;
+        for (const job of this.highlights.values()) job.resolve(highlightFile(job.lang, job.lines));
+        this.highlights.clear();
+      };
+      this.worker = w;
+    }
+    const id = ++this.highlightId;
+    return new Promise((resolve) => {
+      this.highlights.set(id, { resolve, lang, lines });
+      this.worker!.postMessage({ id, lang, lines });
+    });
   }
 
   async loadPull(number: number): Promise<void> {
@@ -865,19 +917,12 @@ function edit<K extends string>(target: Record<K, string>, field: K, k: Key): bo
 const clampMove = (at: number, d: number, count: number) => Math.max(0, Math.min(count - 1, d === Infinity ? count - 1 : d === -Infinity ? 0 : at + d));
 
 /**
- * Syntax runs for a file's two sides, or null without a known language. A side whose
- * text didn't change keeps its runs, so a live refresh re-highlights only what moved.
+ * Where the syntax worker is. Run from source: next to this file. In the compiled binary,
+ * `import.meta.url` is the bundle's root (src/, the entrypoints' common folder), and the
+ * worker is the separate entrypoint build.ts adds, under tui/.
  */
-function syntaxFor(path: string, data: { oldContent: string | null; newContent: string | null }, prev: FileView["syntax"]): FileView["syntax"] {
-  const lang = languageFor(path);
-  if (!lang) return null;
-  const side = (content: string | null, before: SyntaxSide | null | undefined): SyntaxSide | null => {
-    if (content === null) return null;
-    if (before?.source === content) return before;
-    const runs = highlightFile(lang, splitLines(content)!.map(untab));
-    return runs ? { source: content, runs } : null;
-  };
-  return { old: side(data.oldContent, prev?.old), new: side(data.newContent, prev?.new) };
+function workerUrl(): string {
+  return import.meta.url.includes("/$bunfs/") ? "./tui/syntaxWorker.ts" : new URL("./syntaxWorker.ts", import.meta.url).href;
 }
 
 const errorText = (e: unknown) => String((e as Error)?.message ?? e);
