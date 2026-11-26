@@ -8,10 +8,7 @@
     "dev": "bun --hot src/index.ts",
     "start": "NODE_ENV=production bun src/index.ts",
     "build": "bun build.ts",
-    "install:bin": "bun build.ts --install",
-    "build:herdr": "bun herdr/build.ts",
-    "install:herdr": "bun herdr/build.ts --install",
-    "uninstall:herdr": "bun herdr/build.ts --uninstall"
+    "install:bin": "bun build.ts --install"
   },
   "dependencies": {
     "@effect/platform-bun": "^4.1.4",

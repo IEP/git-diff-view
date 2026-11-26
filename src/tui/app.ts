@@ -1,29 +1,25 @@
 /**
- * git-diff-view in the terminal: the Herdr mod's repository layer and diff model
- * (`herdr/src`) on a local `Host`, drawn with plain ANSI. This file owns the state's
- * changes (loading, live refresh, keys); `view.ts` draws it, `term.ts` talks to the TTY.
+ * git-diff-view in the terminal: the server's Git, GitHub and DiffSearch services
+ * (`git.ts`), drawn with plain ANSI. This file owns the state's changes (loading, live
+ * refresh, keys); `view.ts` draws it, `term.ts` talks to the TTY.
  */
 import { buildTree, filesInTreeOrder } from "@/lib/tree";
 import { OBJECT_ID } from "@/shared/gitText";
 import type { SearchHit } from "@/shared/api";
-import { defaultRefs, openRepo, type Repo } from "../../herdr/src/repo";
-import { expand, findLine, findPair, parseFilePatch, splitLines, untab, type Gap } from "../../herdr/src/diffModel";
-import { buildIndex, search } from "../../herdr/src/search";
-import { languageFor, MAX_SYNTAX_CHARS, SyntaxDoc } from "../../herdr/src/syntax";
-import { bunHost } from "./host";
+import { defaultRefs } from "@/lib/refs";
+import { expand, findLine, findPair, parseFilePatch, splitLines, untab, type Gap } from "./diffModel";
+import { openRepo, type Repo } from "./git";
+import { highlightFile, languageFor } from "./syntax";
 import { diffRows, filteredTree, type DiffRows, initialState, sideWidth, layoutFor, pickerItems, searchRows, selectedFile, treeRows, type FileView, type Mode, type State, type SyntaxSide } from "./state";
 import { openTerminal, parseMouse, type Key, type Terminal } from "./term";
 import { frame, gapAction, headerAction } from "./view";
 
 const REFRESH_MS = 2000;
-const SEARCH_LINES = 200_000;
 const SEARCH_DELAY_MS = 120;
 /** Columns `<` / `>` resize the sidebar by. */
 const SIDE_STEP = 4;
 /** Rows a wheel notch scrolls. */
 const WHEEL_LINES = 3;
-/** Time per frame spent colouring the rows on screen; the rest follows on the next tick. */
-const SYNTAX_BUDGET_MS = 30;
 
 export interface TuiOptions {
   readonly base?: string;
@@ -83,7 +79,7 @@ export class App {
   async load(): Promise<void> {
     const s = this.state;
     try {
-      this.repo = await openRepo(bunHost(s.root));
+      this.repo = openRepo(s.root);
       const [info, refs] = await Promise.all([this.repo.info(), this.repo.refs()]);
       s.info = info;
       s.refs = refs;
@@ -102,6 +98,7 @@ export class App {
 
   quit(): void {
     if (this.timer) clearInterval(this.timer);
+    void this.repo?.dispose();
     this.term?.restore();
     this.done();
   }
@@ -117,18 +114,14 @@ export class App {
     });
   }
 
-  /** The frame at a size, after keeping the cursors on screen and colouring visible rows. */
+  /** The frame at a size, after keeping the cursors on screen. */
   frame(cols: number, rows: number): Array<string> {
     this.keepVisible(cols, rows);
-    this.colour(cols, rows, Infinity);
     return frame(this.state, cols, rows);
   }
 
   private paint(cols: number, rows: number): void {
-    this.keepVisible(cols, rows);
-    const more = this.colour(cols, rows, SYNTAX_BUDGET_MS);
-    this.term!.paint(frame(this.state, cols, rows));
-    if (more) setTimeout(() => this.render(), 0);
+    this.term!.paint(this.frame(cols, rows));
   }
 
   // ---------------------------------------------------------------- loading
@@ -198,8 +191,16 @@ export class App {
       // Same text as on screen: keep the rows (and the cursor) as they are.
       const old = s.file;
       if (!(old?.key === key && old.data.patch === data.patch && old.data.newContent === data.newContent && old.data.oldContent === data.oldContent)) {
-        s.file = { key, path: f.path, data, parsed: parseFilePatch(data.patch), oldLines: splitLines(data.oldContent), newLines: splitLines(data.newContent), syntax: this.syntaxFor(f.path, data) };
+        const prev = old?.path === f.path ? old.syntax : null;
+        const file: FileView = { key, path: f.path, data, parsed: parseFilePatch(data.patch), oldLines: splitLines(data.oldContent), newLines: splitLines(data.newContent), syntax: null };
+        s.file = file;
         s.fileError = null;
+        // Draw plain first, colour right after: a large file takes a moment to highlight.
+        setTimeout(() => {
+          if (s.file !== file) return;
+          file.syntax = syntaxFor(f.path, data, prev);
+          this.render();
+        }, 0);
       }
       this.applyJump();
     } catch (e) {
@@ -211,22 +212,6 @@ export class App {
       s.fileLoading = false;
       this.render();
     }
-  }
-
-  /**
-   * Syntax state for a file's two sides, or null without a known language. A side whose
-   * text didn't change keeps its doc, so a refresh re-colours only what moved.
-   */
-  private syntaxFor(path: string, data: { oldContent: string | null; newContent: string | null }): FileView["syntax"] {
-    const lang = languageFor(path);
-    if (!lang) return null;
-    const prev = this.state.file?.path === path ? this.state.file.syntax : null;
-    const side = (content: string | null, before: SyntaxSide | null | undefined): SyntaxSide | null => {
-      if (content === null || content.length > MAX_SYNTAX_CHARS) return null;
-      if (before?.source === content) return before;
-      return { source: content, doc: new SyntaxDoc(lang, splitLines(content)!.map(untab), before?.doc) };
-    };
-    return { old: side(data.oldContent, prev?.old), new: side(data.newContent, prev?.new) };
   }
 
   async loadPull(number: number): Promise<void> {
@@ -286,7 +271,6 @@ export class App {
         await this.loadCompare({ quiet: true });
         // Hits follow the text on disk, as the web view's do.
         if (s.search.open && s.search.query.trim()) await this.runSearch({ quiet: true });
-        else s.search.index = null;
       }
     } catch {
       /* the next tick tries again */
@@ -302,8 +286,6 @@ export class App {
   private forget(): void {
     const s = this.state;
     s.expanded = new Map();
-    s.search.index = null;
-    s.search.indexedPatch = null;
     s.search.result = null;
     s.search.jump = null;
     this.pendingJump = null;
@@ -371,18 +353,11 @@ export class App {
     if (!quiet) ss.busy = true;
     this.render();
     try {
-      // A live comparison re-reads its patch, and re-indexes only when it changed.
-      if (!ss.index || this.live()) {
-        const p = await this.repo.patch(cmp.base.sha, cmp.head.sha, SEARCH_LINES);
-        if (s.compare !== cmp) return;
-        if (p.patch !== ss.indexedPatch || !ss.index) {
-          ss.index = buildIndex(p.patch, p.partial);
-          ss.indexedPatch = p.patch;
-        }
-      }
-      if (ss.query !== query) return;
+      // The server's index: fixed commits are indexed once, a live side re-indexed when its diff changed.
+      const result = await this.repo.search(cmp.base.sha, cmp.head.sha, query);
+      if (s.compare !== cmp || ss.query !== query) return;
       const kept = ss.result?.hits[ss.cursor];
-      ss.result = search(ss.index, query);
+      ss.result = result;
       ss.error = null;
       const again = kept ? ss.result.hits.findIndex((h) => h.path === kept.path && h.side === kept.side && h.line === kept.line) : -1;
       ss.cursor = again >= 0 ? again : 0;
@@ -464,33 +439,6 @@ export class App {
       const n = pickerItems(s, s.picker).length;
       [s.picker.cursor, s.picker.scroll] = fitTo(s.picker.cursor, s.picker.scroll, n, L.body - 3);
     }
-  }
-
-  /** Work out syntax colours for the rows on screen; true when some are still to do. */
-  private colour(cols: number, rows: number, budgetMs: number): boolean {
-    const s = this.state;
-    const docs = s.file?.syntax;
-    const built = diffRows(s);
-    if (!docs || !built) return false;
-    const h = layoutFor(s, cols, rows).diffBody;
-    const deadline = Date.now() + budgetMs;
-    for (let i = s.diffScroll; i < s.diffScroll + h && i < built.rows.length; i++) {
-      const row = built.rows[i]!;
-      const want: Array<["old" | "new", number]> = [];
-      if (row.t === "line") want.push(row.line.kind === "del" ? ["old", row.line.old!] : ["new", row.line.new!]);
-      else if (row.t === "pair") {
-        if (row.left) want.push(["old", row.left.n]);
-        if (row.right) want.push(["new", row.right.n]);
-      }
-      for (const [side, n] of want) {
-        const doc = side === "old" ? docs.old?.doc : docs.new?.doc;
-        while (doc?.needs(n)) {
-          if (Date.now() > deadline) return true;
-          doc.work(n, Math.min(deadline, Date.now() + 10));
-        }
-      }
-    }
-    return false;
   }
 
   // ---------------------------------------------------------------- keys
@@ -915,5 +863,21 @@ function edit<K extends string>(target: Record<K, string>, field: K, k: Key): bo
 }
 
 const clampMove = (at: number, d: number, count: number) => Math.max(0, Math.min(count - 1, d === Infinity ? count - 1 : d === -Infinity ? 0 : at + d));
+
+/**
+ * Syntax runs for a file's two sides, or null without a known language. A side whose
+ * text didn't change keeps its runs, so a live refresh re-highlights only what moved.
+ */
+function syntaxFor(path: string, data: { oldContent: string | null; newContent: string | null }, prev: FileView["syntax"]): FileView["syntax"] {
+  const lang = languageFor(path);
+  if (!lang) return null;
+  const side = (content: string | null, before: SyntaxSide | null | undefined): SyntaxSide | null => {
+    if (content === null) return null;
+    if (before?.source === content) return before;
+    const runs = highlightFile(lang, splitLines(content)!.map(untab));
+    return runs ? { source: content, runs } : null;
+  };
+  return { old: side(data.oldContent, prev?.old), new: side(data.newContent, prev?.new) };
+}
 
 const errorText = (e: unknown) => String((e as Error)?.message ?? e);

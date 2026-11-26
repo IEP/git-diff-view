@@ -2,9 +2,8 @@
  * Draws the state as one string per terminal row. Pure: the same state and size always
  * give the same frame, so `bun test` can check screens without a terminal.
  */
-import type { SyntaxKind, SyntaxRun } from "../../herdr/src/syntax";
-import { segments, untab, type Side } from "../../herdr/src/diffModel";
-import type { DiffLine } from "../../herdr/src/diffModel";
+import { segments, untab, type DiffLine, type Side } from "./diffModel";
+import type { SyntaxKind, SyntaxRun } from "./syntax";
 import { clean, ellipsize, ellipsizeStart, fit, width, type Span, type Style } from "./ansi";
 import { diffRows, emptyMessage, layoutFor, layoutOf, pickerItems, revLabel, searchRows, selectedFile, treeRows, type Layout, type State } from "./state";
 
@@ -239,7 +238,7 @@ function diffPane(state: State, L: Layout): Array<string> {
   const file = state.file;
   if (!built || !file) return [...out, ...message(h, w, "")];
   const docs = file.syntax;
-  const runs = (side: "old" | "new", n: number): ReadonlyArray<SyntaxRun> | null | undefined => (side === "old" ? docs?.old : docs?.new)?.doc.runs(n);
+  const runs = (side: "old" | "new", n: number): ReadonlyArray<SyntaxRun> | null | undefined => (side === "old" ? docs?.old : docs?.new)?.runs[n - 1];
   const query = state.search.open ? state.search.query.trim() : "";
   const jump = state.search.jump && state.search.jump.path === file.path ? state.search.jump : null;
 

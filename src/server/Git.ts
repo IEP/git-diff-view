@@ -643,6 +643,6 @@ export async function readDisk(root: string, path: string): Promise<DiskFile> {
   }
 }
 
-// The parsers moved to @/shared/gitText (the Herdr mod uses them too); re-exported for existing importers.
+// The parsers live in @/shared/gitText; re-exported for existing importers.
 export { diffRange, isRepoPath, OBJECT_ID, parseDecorations, parseGraphLog, parseNameStatus, parseNumstat, sideOf, untrackedPatch } from "@/shared/gitText";
 export type { NumstatEntry, Side } from "@/shared/gitText";

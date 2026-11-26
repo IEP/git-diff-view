@@ -3,10 +3,9 @@
  * entries, pane sizes). Pure: no terminal, no git. `app.ts` changes it, `view.ts` draws it.
  */
 import { buildTree, visibleRows, type DirNode, type VisibleRow } from "@/lib/tree";
-import { INDEX, PSEUDO_LABEL, WORKTREE, type CompareResponse, type FileChange, type FileDiffResponse, type PullResolved, type PullsResponse, type RefsResponse, type RepoInfo, type SearchHit } from "@/shared/api";
-import { inlineMarks, splitRows, unifiedRows, type Expansions, type ParsedPatch, type Range, type SplitRow, type UnifiedRow } from "../../herdr/src/diffModel";
-import type { SearchIndex, SearchResult } from "../../herdr/src/search";
-import type { SyntaxDoc } from "../../herdr/src/syntax";
+import { INDEX, PSEUDO_LABEL, WORKTREE, type CompareResponse, type FileChange, type FileDiffResponse, type PullResolved, type PullsResponse, type RefsResponse, type RepoInfo, type SearchHit, type SearchResponse } from "@/shared/api";
+import { inlineMarks, splitRows, unifiedRows, type Expansions, type ParsedPatch, type Range, type SplitRow, type UnifiedRow } from "./diffModel";
+import type { SyntaxRun } from "./syntax";
 
 export type Mode = "split" | "unified";
 export type Focus = "tree" | "diff";
@@ -19,12 +18,15 @@ export interface FileView {
   readonly parsed: ParsedPatch;
   readonly oldLines: ReadonlyArray<string> | null;
   readonly newLines: ReadonlyArray<string> | null;
-  readonly syntax: { readonly old: SyntaxSide | null; readonly new: SyntaxSide | null } | null;
+  /** Filled in just after the file first draws (plain until then); null without a known language. */
+  syntax: { readonly old: SyntaxSide | null; readonly new: SyntaxSide | null } | null;
 }
 
 export interface SyntaxSide {
+  /** The text the runs were worked out from: a refresh with the same text keeps them. */
   readonly source: string;
-  readonly doc: SyntaxDoc;
+  /** Runs per line (index 0 is line 1); null for a line left plain. */
+  readonly runs: ReadonlyArray<ReadonlyArray<SyntaxRun> | null>;
 }
 
 export interface Picker {
@@ -39,10 +41,7 @@ export interface SearchState {
   /** Typing in the query line. */
   editing: boolean;
   query: string;
-  index: SearchIndex | null;
-  /** The patch the index was built from: a live comparison rebuilds only when it changed. */
-  indexedPatch: string | null;
-  result: SearchResult | null;
+  result: SearchResponse | null;
   cursor: number;
   scroll: number;
   busy: boolean;
@@ -105,7 +104,7 @@ export function initialState(root: string, opts: { base?: string; head?: string;
     compare: null, compareError: null, loading: false,
     focus: "tree", sideWidth: null, resizing: false, filter: "", filtering: false, collapsed: new Set(), treeCursor: 0, treeScroll: 0, selected: null,
     file: null, fileError: null, fileLoading: false, expanded: new Map(), mode: opts.mode ?? "split", diffCursor: 0, diffScroll: 0, hscroll: 0,
-    search: { open: false, editing: false, query: "", index: null, indexedPatch: null, result: null, cursor: 0, scroll: 0, busy: false, error: null, jump: null },
+    search: { open: false, editing: false, query: "", result: null, cursor: 0, scroll: 0, busy: false, error: null, jump: null },
     picker: null, help: false, message: null,
   };
 }
@@ -257,7 +256,7 @@ export function revLabel(rev: string): string {
 export type SearchRow = { readonly t: "file"; readonly path: string; readonly count: number } | { readonly t: "hit"; readonly i: number };
 
 /** Hits grouped under their file, as the panel lists them. */
-export function searchRows(result: SearchResult | null): Array<SearchRow> {
+export function searchRows(result: SearchResponse | null): Array<SearchRow> {
   const rows: Array<SearchRow> = [];
   const hits = result?.hits ?? [];
   for (let i = 0; i < hits.length; i++) {

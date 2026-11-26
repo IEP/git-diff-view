@@ -225,7 +225,7 @@ export function findPair(rows: ReadonlyArray<SplitRow>, side: "old" | "new", lin
   return rows.findIndex((r) => r.t === "pair" && (side === "old" ? r.left?.n === line && r.left.kind !== "ctx" : r.right?.n === line && r.right.kind !== "ctx"));
 }
 
-/** Text draws a tab as nothing: pad each to the next 4-column stop. */
+/** A terminal moves a tab to its own stops: pad each to the next 4-column stop instead, so columns line up. */
 export const untab = (text: string) => (text.includes("\t") ? text.replace(/[^\t]*\t/g, (s) => s.slice(0, -1).padEnd(s.length - 1 - ((s.length - 1) % 4) + 4)) : text);
 
 /** A half-open character range `[from, to)` in a line's drawn (untabbed) text. */

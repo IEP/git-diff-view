@@ -1,8 +1,4 @@
-/**
- * Pure helpers for reading git's output: no I/O, no Effect, no Node or DOM APIs.
- * The server (`src/server/*`) and the Herdr mod (`herdr/`) both use them, so the mod's
- * runtime (no Intl, TextEncoder or TextDecoder) sets what may appear here.
- */
+/** Pure helpers for reading git's output: no I/O, no Effect. Used by the server's services. */
 import { INDEX, WORKTREE } from "@/shared/api";
 import type { ChangeStatus, FileChange, GraphCommit, GraphRef } from "@/shared/api";
 
@@ -227,7 +223,8 @@ export function unquotePath(raw: string): string {
     if (c !== "\\") {
       const cp = body.codePointAt(i)!;
       if (cp > 0xffff) i++; // the low surrogate is part of this code point
-      bytes.push(...utf8Encode(cp));
+      // A lone surrogate encodes as U+FFFD.
+      bytes.push(...utf8.encode(String.fromCodePoint(cp)));
       continue;
     }
     const next = body[++i] ?? "";
@@ -238,48 +235,11 @@ export function unquotePath(raw: string): string {
       bytes.push(ESCAPES[next] ?? next.charCodeAt(0));
     }
   }
-  return utf8Decode(bytes);
+  // Each malformed sequence (from octal escapes) becomes U+FFFD.
+  return new TextDecoder().decode(Uint8Array.from(bytes));
 }
 
-// Hand-written because the Herdr mod runtime has no TextEncoder / TextDecoder.
-function utf8Encode(cp: number): Array<number> {
-  if (cp >= 0xd800 && cp <= 0xdfff) cp = 0xfffd; // lone surrogate
-  if (cp < 0x80) return [cp];
-  if (cp < 0x800) return [0xc0 | (cp >> 6), 0x80 | (cp & 63)];
-  if (cp < 0x10000) return [0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63)];
-  return [0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 63), 0x80 | ((cp >> 6) & 63), 0x80 | (cp & 63)];
-}
-
-/** UTF-8 bytes to a string; each malformed sequence becomes U+FFFD, as TextDecoder does. */
-export function utf8Decode(bytes: ReadonlyArray<number>): string {
-  let out = "";
-  let i = 0;
-  while (i < bytes.length) {
-    const b = bytes[i]!;
-    const need = b < 0x80 ? 0 : b >= 0xc2 && b < 0xe0 ? 1 : b >= 0xe0 && b < 0xf0 ? 2 : b >= 0xf0 && b < 0xf5 ? 3 : -1;
-    if (need < 0) {
-      out += "�";
-      i++;
-      continue;
-    }
-    let cp = need === 0 ? b : b & (0x3f >> need);
-    let j = 1;
-    for (; j <= need; j++) {
-      const c = bytes[i + j];
-      if (c === undefined || (c & 0xc0) !== 0x80) break;
-      cp = (cp << 6) | (c & 63);
-    }
-    const overlong = (need === 2 && cp < 0x800) || (need === 3 && (cp < 0x10000 || cp > 0x10ffff));
-    if (j <= need || overlong || (cp >= 0xd800 && cp <= 0xdfff)) {
-      out += "�";
-      i += Math.max(1, j);
-      continue;
-    }
-    out += String.fromCodePoint(cp);
-    i += need + 1;
-  }
-  return out;
-}
+const utf8 = new TextEncoder();
 
 /** The path from a `--- a/x` / `+++ b/x` header line, or null for `/dev/null`. */
 function headerPath(rest: string, prefix: "a/" | "b/"): string | null {

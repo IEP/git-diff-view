@@ -1,11 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { clean, fit } from "./ansi";
 import { App } from "./app";
 import { layoutFor } from "./state";
-import { bunHost } from "./host";
 import { decodeKeys } from "./term";
 
 const plain = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -237,13 +236,5 @@ describe("terminal viewer (real repository)", () => {
     const screen = app.frame(50, 20).map(plain);
     expect(screen.join("\n")).not.toContain(" Files");
     for (const row of screen) expect(Bun.stringWidth(row)).toBe(50);
-  });
-
-  test("the host reads only real files under the root, never through a symlink", async () => {
-    const host = bunHost(dir);
-    await symlink("/etc/hosts", join(dir, "link"));
-    expect(await host.readFile(join(dir, "link"))).toBe("/etc/hosts");
-    expect(await host.readFile(join(dir, "missing.txt"))).toBeNull();
-    expect(await host.readFile(join(dir, "notes.md"))).toBe("one\ntwo\n");
   });
 });
