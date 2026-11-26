@@ -261,8 +261,7 @@ function diffPane(state: State, L: Layout): Array<string> {
       continue;
     }
     if (row.t === "gap") {
-      const hint = isCursor ? "   enter: show all · J / K: 20 more down / up" : "";
-      out.push(fit([mark, { text: ` ⋯ ${row.hidden} unchanged line${row.hidden === 1 ? "" : "s"}`, style: { fg: C.dim, bg: C.hunkBg } }, { text: hint, style: { fg: C.gutter, bg: C.hunkBg } }], w, { bg: C.hunkBg }));
+      out.push(fit([mark, ...gapSpans(row.hidden, isCursor)], w, { bg: C.hunkBg }));
       continue;
     }
     if (row.t === "line") {
@@ -282,6 +281,34 @@ function diffPane(state: State, L: Layout): Array<string> {
     out.push(fit([m], 1) + half(row.left, "old", leftW, nw, built.marks, query, runs, state.hscroll) + fit([{ text: "│", style: { fg: C.rule } }], 1) + half(row.right, "new", rightW, nw, built.marks, query, runs, state.hscroll));
   }
   return out;
+}
+
+/** What clicking part of a `⋯` row does: 20 more lines from its top or bottom, or all. */
+export type GapAction = "down" | "up" | "all";
+type GapSpan = Span & { readonly action: GapAction };
+
+/** A gap row after its cursor mark: the count, then the buttons (partial ones only when they'd leave some hidden). */
+function gapSpans(hidden: number, isCursor: boolean): Array<GapSpan> {
+  const bg = C.hunkBg;
+  const spans: Array<GapSpan> = [{ text: ` ⋯ ${hidden} unchanged line${hidden === 1 ? "" : "s"}  `, style: { fg: C.dim, bg }, action: "all" }];
+  const button = (text: string, action: GapAction): GapSpan => ({ text: ` ${text} `, style: { fg: isCursor ? C.accent : C.gutter, bg: C.bar }, action });
+  const gapAfter: GapSpan = { text: " ", style: { bg }, action: "all" };
+  if (hidden > GAP_STEP) spans.push(button(`↓ ${GAP_STEP}`, "down"), gapAfter, button(`↑ ${GAP_STEP}`, "up"), gapAfter);
+  spans.push(button("all", "all"));
+  if (isCursor) spans.push({ text: hidden > GAP_STEP ? "   enter all · J / K 20 down / up" : "   enter", style: { fg: C.gutter, bg }, action: "all" });
+  return spans;
+}
+const GAP_STEP = 20;
+
+/** The gap action under a 0-based column of the diff pane (column 0 is the cursor mark). */
+export function gapAction(hidden: number, x: number): GapAction {
+  let at = 1;
+  for (const span of gapSpans(hidden, false)) {
+    const w = width(span.text);
+    if (x >= at && x < at + w) return span.action;
+    at += w;
+  }
+  return "all";
 }
 
 const lineBg = (kind: DiffLine["kind"]) => (kind === "add" ? C.addBg : kind === "del" ? C.delBg : undefined);
@@ -382,7 +409,7 @@ const HELP: ReadonlyArray<readonly [string, string]> = [
   ["↑ ↓  j k", "move · PgUp / PgDn · g / G top / bottom"],
   ["← →", "scroll long lines sideways (0 resets)"],
   ["[ ]", "previous / next change"],
-  ["enter", "on a ⋯ row: show the hidden lines (J / K: 20 more from the top / bottom)"],
+  ["enter", "on a ⋯ row: show the hidden lines (J / K, or click ↓ 20 / ↑ 20: 20 more from the top / bottom)"],
 ];
 
 function help(rows: number, cols: number): Array<string> {

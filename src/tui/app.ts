@@ -13,7 +13,7 @@ import { languageFor, MAX_SYNTAX_CHARS, SyntaxDoc } from "../../herdr/src/syntax
 import { bunHost } from "./host";
 import { diffRows, filteredTree, type DiffRows, initialState, sideWidth, layoutFor, pickerItems, searchRows, selectedFile, treeRows, type FileView, type Mode, type State, type SyntaxSide } from "./state";
 import { openTerminal, parseMouse, type Key, type Terminal } from "./term";
-import { frame, headerAction } from "./view";
+import { frame, gapAction, headerAction } from "./view";
 
 const REFRESH_MS = 2000;
 const SEARCH_LINES = 200_000;
@@ -710,7 +710,7 @@ export class App {
       const row = built.rows[i];
       if (bodyRow === 0 || !row) return;
       s.diffCursor = i;
-      if (row.t === "gap") this.expandGap(row.gap, "all");
+      if (row.t === "gap") this.expandGap(row.gap, gapAction(row.hidden, x - L.diffLeft));
     }
   }
 

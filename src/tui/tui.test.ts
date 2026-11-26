@@ -164,6 +164,38 @@ describe("terminal viewer (real repository)", () => {
     expect(app.state.head).toBe(":worktree");
   });
 
+  test("the buttons on a ⋯ row show 20 lines from its top or bottom", async () => {
+    const app = await open();
+    app.select("app.ts");
+    await app.loadFile();
+    const clickOn = (label: string) => {
+      const screen = app.frame(100, 30).map(plain);
+      const y = screen.findIndex((r) => r.includes(label));
+      app.key(`mouse click ${screen[y]!.indexOf(label) + 2} ${y + 1}`);
+      return app.frame(100, 30).map(plain).join("\n");
+    };
+    // The first gap hides lines 1–37 (const v0 … v36).
+    let text = clickOn("↓ 20");
+    expect(text).toContain("const v19 = 19;");
+    expect(text).not.toContain("const v20 = 20;");
+    expect(text).toContain("⋯ 17 unchanged lines");
+    // 17 left: only "all" is offered, and it shows the rest.
+    expect(text).not.toContain("↓ 20");
+    text = clickOn(" all ");
+    expect(text).toContain("const v20 = 20;");
+    expect(text).not.toContain("⋯ 17");
+    // From the bottom on a fresh view: the 20 lines just above the change.
+    const other = await open();
+    other.select("app.ts");
+    await other.loadFile();
+    const screen = other.frame(100, 30).map(plain);
+    const y = screen.findIndex((r) => r.includes("↑ 20"));
+    other.key(`mouse click ${screen[y]!.indexOf("↑ 20") + 2} ${y + 1}`);
+    text = other.frame(100, 30).map(plain).join("\n");
+    expect(text).toContain("const v17 = 17;");
+    expect(text).not.toContain("const v16 = 16;");
+  });
+
   test("the sidebar resizes by dragging its divider or with < > =", async () => {
     const app = await open();
     const side = () => layoutFor(app.state, 100, 30).side;

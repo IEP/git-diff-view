@@ -117,7 +117,7 @@ It has the file tree and filter, side-by-side or unified diffs with syntax colou
 |---|---|
 | `tab` | switch between the file list and the diff |
 | `↑ ↓` / `j k`, `PgUp PgDn`, `g G` | move |
-| `enter` | open a file, fold a folder, or show the lines hidden in a `⋯` row (`J` / `K` show 20 more) |
+| `enter` | open a file, fold a folder, or show the lines hidden in a `⋯` row (`J` / `K`, or its `↓ 20` / `↑ 20` buttons, show 20 more) |
 | `,` / `.` or `Shift+F7` / `F7` | previous / next file |
 | `[ ]` | previous / next change in the file |
 | `← →` | scroll long lines sideways in the diff (`0` resets) |
@@ -127,7 +127,7 @@ It has the file tree and filter, side-by-side or unified diffs with syntax colou
 | `f` | filter files by path |
 | `s`, `r`, `q` | side by side ↔ unified, reload, quit |
 | `<` / `>`, `=` | narrower / wider sidebar, back to the automatic width (or drag the `│` divider) |
-| mouse | click a file, a `⋯` row, a search hit or a picker entry; click the base / head (or the PR) in the top bar to change it, the layout name to switch it; drag the divider to resize the sidebar; the wheel scrolls the pane under the pointer |
+| mouse | click a file, a `⋯` row (or its `↓ 20` / `↑ 20` buttons), a search hit or a picker entry; click the base / head (or the PR) in the top bar to change it, the layout name to switch it; drag the divider to resize the sidebar; the wheel scrolls the pane under the pointer |
 
 While it runs, the terminal sends mouse clicks to the viewer, so selecting text needs the terminal's override (usually Shift-drag, Option-drag in iTerm2 and Terminal.app).
 
