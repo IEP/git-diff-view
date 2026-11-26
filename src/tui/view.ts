@@ -5,7 +5,8 @@
 import { segments, untab, type DiffLine, type Side } from "./diffModel";
 import type { SyntaxKind, SyntaxRun } from "./syntax";
 import { clean, ellipsize, ellipsizeStart, fit, width, type Span, type Style } from "./ansi";
-import { diffRows, emptyMessage, layoutFor, layoutOf, pickerItems, revLabel, searchRows, selectedFile, treeRows, type Layout, type State } from "./state";
+import { diffRows, emptyMessage, graphMarks, graphRows, layoutFor, layoutOf, pickerItems, revLabel, searchRows, selectedFile, treeRows, type Layout, type State } from "./state";
+import { graphCells } from "./graph";
 
 // 256-colour palette, tuned for dark terminals.
 const C = {
@@ -34,6 +35,7 @@ export function frame(state: State, cols: number, rows: number): Array<string> {
   if (state.fatal) body = message(L.body, cols, state.fatal, C.error);
   else if (state.help) body = help(L.body, cols);
   else if (state.picker) body = picker(state, L.body, cols);
+  else if (state.graph) body = graphScreen(state, L.body, cols);
   else body = panes(state, L);
   out.push(...body, footer(state, cols));
   return out;
@@ -90,11 +92,13 @@ function footer(state: State, cols: number): string {
     ? "type to filter · ↑↓ move · enter pick · esc cancel"
     : state.help
       ? "esc / ? close"
+      : state.graph
+        ? "↑↓ move · enter diff this commit · b/h set base/head here · r reload · esc close"
       : state.search.open
         ? "↑↓ hits · enter open · n/N next/prev · / edit · tab diff · esc close"
         : state.focus === "tree"
-          ? "↑↓ move · ←→ fold · enter open · tab diff · f filter · / search · b/h base/head · p PRs · s layout · ? help · q quit"
-          : "↑↓ scroll · ←→ pan · enter expand · [ ] hunk · , . file · tab tree · / search · s layout · ? help · q quit";
+          ? "↑↓ move · ←→ fold · enter open · tab diff · f filter · / search · b/h base/head · c commits · p PRs · s layout · ? help · q quit"
+          : "↑↓ scroll · ←→ pan · enter expand · [ ] hunk · , . file · tab tree · / search · c commits · s layout · ? help · q quit";
   return fit([{ text: ` ${hints}`, style: { ...bar, fg: C.dim } }], cols, bar);
 }
 
@@ -355,6 +359,51 @@ function lineText(
   return fit([{ text: sign, style: { bg, fg: kind === "add" ? C.add : kind === "del" ? C.del : C.gutter } }], 1) + fit(spans, w - 1, { bg }, hscroll);
 }
 
+// ---------------------------------------------------------------- commit graph
+
+/** Lane colours, cycled. */
+const LANES = [75, 114, 179, 176, 80, 204, 109, 180];
+const REF_FG = { head: C.accent, branch: C.add, remote: C.ren, tag: C.mod } as const;
+
+function graphScreen(state: State, rows: number, cols: number): Array<string> {
+  const g = state.graph!;
+  const all = graphRows(g);
+  const marks = graphMarks(state);
+  const out: Array<string> = [];
+  const count = g.commits ? `${g.commits.length}${g.truncated ? "+" : ""} commit${g.commits.length === 1 ? "" : "s"}` : "";
+  const note = g.error ?? (g.loading ? "loading…" : "");
+  out.push(fit([{ text: " Commits", style: { bold: true, fg: C.accent } }, { text: count ? `  ${count}` : "", style: { fg: C.dim } }, { text: "   A ", style: { fg: C.dim } }, { text: revLabel(state.base), style: { bold: true } }, { text: " → B ", style: { fg: C.dim } }, { text: revLabel(state.head), style: { bold: true } }, { text: note ? `   ${note}` : "", style: { fg: g.error ? C.error : C.dim } }], cols));
+  const h = rows - 1;
+  if (g.commits?.length === 0) return [...out, ...message(h, cols, "No commits yet.")];
+  const shown = all.slice(g.scroll, g.scroll + h);
+  // One graph width per screen, so the text lines up; a very wide history is cut off.
+  const gw = Math.min(Math.max(2, ...shown.map((r) => r.width * 2)), Math.max(8, Math.floor(cols * 0.4)));
+  for (let r = 0; r < h; r++) {
+    const row = shown[r];
+    if (!row) {
+      out.push(fit([], cols));
+      continue;
+    }
+    const c = row.commit;
+    const cur = g.scroll + r === g.cursor;
+    const base: Style = cur ? { bg: C.cursor } : {};
+    const end = c.sha === marks.head ? "B" : c.sha === marks.base ? "A" : marks.range.has(c.sha) ? "┃" : " ";
+    const spans: Array<Span> = [{ text: cur ? "▌" : " ", style: { ...base, fg: C.cursorMark } }, { text: end, style: { ...base, fg: C.accent, bold: end !== "┃" } }, { text: " ", style: base }];
+    let cells = graphCells(row);
+    if (cells.length > gw) cells = [...cells.slice(0, gw - 1), { text: "…", color: null }];
+    for (const cell of cells) spans.push({ text: cell.text, style: { ...base, fg: cell.color === null ? C.dim : LANES[cell.color % LANES.length], bold: cell.text === "●" } });
+    spans.push({ text: " ".repeat(gw - cells.length + 1), style: base }, { text: c.shortSha, style: { ...base, fg: C.gutter } }, { text: " ", style: base });
+    for (const ref of c.refs) spans.push({ text: ref.name, style: { ...base, fg: REF_FG[ref.kind], bold: true } }, { text: " ", style: base });
+    spans.push({ text: c.subject, style: { ...base, fg: marks.range.has(c.sha) || cur ? undefined : C.dim } });
+    // Who and when, on the right, while the subject keeps some room.
+    const meta = ` ${c.author} · ${c.date.slice(0, 10)} `;
+    const used = spans.reduce((x, s) => x + width(clean(s.text)), 0) - width(clean(c.subject));
+    const metaW = cols - used >= width(clean(meta)) + 20 ? width(clean(meta)) : 0;
+    out.push(fit(spans, cols - metaW, base) + (metaW ? fit([{ text: meta, style: { ...base, fg: C.gutter } }], metaW, base) : ""));
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------- overlays
 
 function picker(state: State, rows: number, cols: number): Array<string> {
@@ -389,6 +438,7 @@ const HELP: ReadonlyArray<readonly [string, string]> = [
   ["b / h", "pick the base (A) / head (B) revision: branches, tags, commits, working tree, index"],
   ["x", "swap base and head"],
   ["p", "pick a GitHub pull request (needs `gh`)"],
+  ["c", "commit graph: enter diffs a commit against its parent, b / h set base / head to it"],
   ["/", "search the changed lines of the whole comparison"],
   ["n / N", "next / previous search hit"],
   [", .", "previous / next file (also Shift+F7 / F7)"],

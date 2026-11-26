@@ -21,6 +21,7 @@ export function openRepo(root: string) {
     compare: (base: string, head: string) => run(Effect.gen(function* () { return yield* (yield* Git).compare(base, head); })),
     fileDiff: (base: string, head: string, path: string, oldPath: string | null) =>
       run(Effect.gen(function* () { return yield* (yield* Git).fileDiff(base, head, path, oldPath); })),
+    graph: (limit: number) => run(Effect.gen(function* () { return yield* (yield* Git).graph(limit); })),
     search: (base: string, head: string, query: string) => run(Effect.gen(function* () { return yield* (yield* DiffSearch).search(base, head, query); })),
     pulls: () => run(Effect.gen(function* () { return yield* (yield* GitHub).pulls; })),
     pull: (number: number) => run(Effect.gen(function* () { return yield* (yield* GitHub).pull(number); })),

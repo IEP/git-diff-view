@@ -7,10 +7,11 @@ import { buildTree, filesInTreeOrder } from "@/lib/tree";
 import { OBJECT_ID } from "@/shared/gitText";
 import type { SearchHit } from "@/shared/api";
 import { defaultRefs } from "@/lib/refs";
+import { MAX_GRAPH_COMMITS } from "@/server/Git";
 import { expand, findLine, findPair, parseFilePatch, splitLines, untab, type Gap } from "./diffModel";
 import { openRepo, type Repo } from "./git";
 import { highlightFile, languageFor, MAX_SYNTAX_CHARS } from "./syntax";
-import { diffRows, filteredTree, type DiffRows, initialState, sideWidth, layoutFor, pickerItems, searchRows, selectedFile, treeRows, type FileView, type Mode, type State, type SyntaxSide } from "./state";
+import { diffRows, filteredTree, graphMarks, type DiffRows, initialState, sideWidth, layoutFor, pickerItems, searchRows, selectedFile, treeRows, type FileView, type Mode, type State, type SyntaxSide } from "./state";
 import { openTerminal, parseMouse, type Key, type Terminal } from "./term";
 import { frame, gapAction, headerAction } from "./view";
 
@@ -18,6 +19,8 @@ const REFRESH_MS = 2000;
 const SEARCH_DELAY_MS = 120;
 /** Columns `<` / `>` resize the sidebar by. */
 const SIDE_STEP = 4;
+/** Commits the graph loads first, and how many more each time the cursor nears the end. */
+const GRAPH_STEP = 500;
 /** Rows a wheel notch scrolls. */
 const WHEEL_LINES = 3;
 
@@ -319,6 +322,7 @@ export class App {
       const moved = info.headSha !== s.info?.headSha;
       s.info = info;
       if (moved || force) s.refs = await this.repo.refs();
+      if ((moved || force) && s.graph) void this.loadGraph();
       if ((this.live() && s.pr === null) || force) {
         await this.loadCompare({ quiet: true });
         // Hits follow the text on disk, as the web view's do.
@@ -329,6 +333,100 @@ export class App {
     } finally {
       this.refreshing = false;
       this.render();
+    }
+  }
+
+  // ---------------------------------------------------------------- commit graph
+
+  openGraph(): void {
+    this.state.graph = { commits: null, truncated: false, limit: GRAPH_STEP, loading: false, error: null, cursor: 0, scroll: 0 };
+    void this.loadGraph();
+  }
+
+  /** (Re)load the history; the cursor stays on its commit, or starts on the head. */
+  async loadGraph(): Promise<void> {
+    const s = this.state;
+    const g = s.graph;
+    if (!g || !this.repo) return;
+    g.loading = true;
+    this.render();
+    try {
+      const res = await this.repo.graph(g.limit);
+      if (s.graph !== g) return;
+      const first = g.commits === null;
+      const at = first ? (graphMarks(s).head ?? s.info?.headSha) : g.commits![g.cursor]?.sha;
+      g.commits = res.commits;
+      g.truncated = res.truncated;
+      g.error = null;
+      const i = at ? res.commits.findIndex((c) => c.sha === at) : -1;
+      if (i >= 0) {
+        g.cursor = i;
+        if (first) g.scroll = Math.max(0, i - 5);
+      }
+    } catch (e) {
+      if (s.graph === g) g.error = errorText(e);
+    } finally {
+      if (s.graph === g) g.loading = false;
+      this.render();
+    }
+  }
+
+  /** Near the end of what's loaded: load more, as the web graph's "Load more" does. */
+  private graphMore(): void {
+    const g = this.state.graph;
+    if (!g?.commits || !g.truncated || g.loading || g.limit >= MAX_GRAPH_COMMITS) return;
+    if (g.cursor < g.commits.length - this.page()) return;
+    g.limit = Math.min(MAX_GRAPH_COMMITS, g.limit + GRAPH_STEP);
+    void this.loadGraph();
+  }
+
+  private graphKey(k: Key): void {
+    const s = this.state;
+    const g = s.graph!;
+    const d = this.moveBy(k, this.page());
+    if (d !== null) {
+      g.cursor = clampMove(g.cursor, d, g.commits?.length ?? 0);
+      this.graphMore();
+      return;
+    }
+    const c = g.commits?.[g.cursor];
+    switch (k) {
+      case "escape":
+      case "c":
+      case "q":
+        s.graph = null;
+        return;
+      case "?":
+        s.help = true;
+        return;
+      case "r":
+        void this.loadGraph();
+        return;
+      case "enter": {
+        if (!c) return;
+        const parent = c.parents[0];
+        if (!parent) {
+          s.message = `${c.shortSha} is the first commit: press b on it to make it the base.`;
+          return;
+        }
+        // Like `git show`: the commit against its first parent.
+        s.graph = null;
+        this.choose(parent, c.sha);
+        return;
+      }
+      case "b":
+      case "h": {
+        if (!c) return;
+        const base = k === "b" ? c.sha : s.base;
+        const head = k === "h" ? c.sha : s.head;
+        if (base === head) {
+          s.message = "Base and head would be the same commit.";
+          return;
+        }
+        this.choose(base, head);
+        s.message = `${k === "b" ? "Base (A)" : "Head (B)"} is now ${c.shortSha}.`;
+        return;
+      }
     }
   }
 
@@ -491,6 +589,7 @@ export class App {
       const n = pickerItems(s, s.picker).length;
       [s.picker.cursor, s.picker.scroll] = fitTo(s.picker.cursor, s.picker.scroll, n, L.body - 3);
     }
+    if (s.graph) [s.graph.cursor, s.graph.scroll] = fitTo(s.graph.cursor, s.graph.scroll, s.graph.commits?.length ?? 0, L.body - 1);
   }
 
   // ---------------------------------------------------------------- keys
@@ -515,6 +614,7 @@ export class App {
       return;
     }
     if (s.picker) return this.pickerKey(k);
+    if (s.graph) return this.graphKey(k);
     if (s.filtering) return this.filterKey(k);
     if (s.search.editing) return this.searchKey(k);
 
@@ -532,6 +632,8 @@ export class App {
       case "h":
         s.picker = { which: k === "b" ? "base" : "head", query: "", cursor: 0, scroll: 0 };
         return;
+      case "c":
+        return this.openGraph();
       case "p":
         s.picker = { which: "pr", query: "", cursor: 0, scroll: 0 };
         if (s.pulls === null || s.pullsError) void this.loadPulls();
@@ -619,7 +721,7 @@ export class App {
       return;
     }
     if (s.fatal) return;
-    if (click && !s.help && !s.picker && y > 0 && L.side > 0 && L.diffWidth > 0 && x === L.side) {
+    if (click && !s.help && !s.picker && !s.graph && y > 0 && L.side > 0 && L.diffWidth > 0 && x === L.side) {
       s.resizing = true;
       return;
     }
@@ -640,6 +742,25 @@ export class App {
         if (i < n) {
           p.cursor = i;
           this.pickerKey("enter");
+        }
+      }
+      return;
+    }
+    if (s.graph) {
+      const g = s.graph;
+      const n = g.commits?.length ?? 0;
+      const h = L.body - 1;
+      if (wheel) {
+        g.scroll = Math.max(0, Math.min(Math.max(0, n - h), g.scroll + wheel));
+        g.cursor = Math.max(g.scroll, Math.min(g.scroll + h - 1, g.cursor));
+        this.graphMore();
+      } else if (click && bodyRow >= 1 && bodyRow < L.body) {
+        // A click picks a commit; a second click on it shows its diff.
+        const i = g.scroll + bodyRow - 1;
+        if (i < n) {
+          if (i === g.cursor) this.graphKey("enter");
+          else g.cursor = i;
+          this.graphMore();
         }
       }
       return;

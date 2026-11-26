@@ -83,7 +83,7 @@ git-diff-view --tui --unified                        # start in one column inste
 bun src/index.ts --tui                               # from a checkout, without building
 ```
 
-It has the file tree and filter, side-by-side or unified diffs with syntax colours and changed-word highlights, gaps you can open, the Base / Head pickers (working tree and index included), pull requests, search over the changed lines, and the same live updates (every 2 s for anything movable). Press `?` for every key. The main ones:
+It has the file tree and filter, side-by-side or unified diffs with syntax colours and changed-word highlights, gaps you can open, the Base / Head pickers (working tree and index included), pull requests, a commit graph, search over the changed lines, and the same live updates (every 2 s for anything movable). Press `?` for every key. The main ones:
 
 | Key | Does |
 |---|---|
@@ -95,6 +95,7 @@ It has the file tree and filter, side-by-side or unified diffs with syntax colou
 | `← →` | scroll long lines sideways in the diff (`0` resets) |
 | `b` / `h`, `x` | pick the base / head revision, swap them |
 | `p` | pick a pull request |
+| `c` | commit graph: `enter` diffs a commit against its parent, `b` / `h` make it the base / head; `A`, `B` and `┃` mark the current range |
 | `/`, `n N` | search the changed lines, next / previous hit |
 | `f` | filter files by path |
 | `s`, `r`, `q` | side by side ↔ unified, reload, quit |
@@ -140,6 +141,7 @@ src/components/          RefPicker, PullPicker, CommitGraph, FileTree, DiffSearc
 src/tui/app.ts           Terminal viewer (--tui): loading, live refresh, keys, mouse
 src/tui/state.ts         Its state and derived rows (tree, diff, pickers, search), pure
 src/tui/view.ts          Draws the state as one ANSI string per row, pure (tested without a terminal)
+src/tui/graph.ts         One commit-graph row (src/lib/graph.ts's lanes) as box-drawing cells, pure
 src/tui/term.ts          Raw mode, alternate screen, key decoding, line-diffing painter
 src/tui/ansi.ts          Styled spans fitted to display columns; control characters made inert
 src/tui/git.ts           The server's Git / GitHub / DiffSearch services as promises, for the terminal viewer

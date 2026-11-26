@@ -2,8 +2,9 @@
  * The terminal viewer's state and what is derived from it (tree rows, diff rows, picker
  * entries, pane sizes). Pure: no terminal, no git. `app.ts` changes it, `view.ts` draws it.
  */
+import { commitsInRange, layoutGraph, type GraphRow } from "@/lib/graph";
 import { buildTree, visibleRows, type DirNode, type VisibleRow } from "@/lib/tree";
-import { INDEX, PSEUDO_LABEL, WORKTREE, type CompareResponse, type FileChange, type FileDiffResponse, type PullResolved, type PullsResponse, type RefsResponse, type RepoInfo, type SearchHit, type SearchResponse } from "@/shared/api";
+import { INDEX, isPseudoRev, PSEUDO_LABEL, WORKTREE, type CompareResponse, type GraphCommit, type FileChange, type FileDiffResponse, type PullResolved, type PullsResponse, type RefsResponse, type RepoInfo, type SearchHit, type SearchResponse } from "@/shared/api";
 import { inlineMarks, splitRows, unifiedRows, type Expansions, type ParsedPatch, type Range, type SplitRow, type UnifiedRow } from "./diffModel";
 import type { SyntaxRun } from "./syntax";
 
@@ -32,6 +33,19 @@ export interface SyntaxSide {
 export interface Picker {
   readonly which: "base" | "head" | "pr";
   query: string;
+  cursor: number;
+  scroll: number;
+}
+
+export interface GraphState {
+  /** Newest first; null until the first load. */
+  commits: ReadonlyArray<GraphCommit> | null;
+  /** More history exists beyond `commits`. */
+  truncated: boolean;
+  /** Commits asked for: grows as the cursor nears the bottom. */
+  limit: number;
+  loading: boolean;
+  error: string | null;
   cursor: number;
   scroll: number;
 }
@@ -92,6 +106,8 @@ export interface State {
 
   search: SearchState;
   picker: Picker | null;
+  /** The commit graph screen, when open. */
+  graph: GraphState | null;
   help: boolean;
   /** A one-line notice in the footer, cleared by the next key. */
   message: string | null;
@@ -105,7 +121,7 @@ export function initialState(root: string, opts: { base?: string; head?: string;
     focus: "tree", sideWidth: null, resizing: false, filter: "", filtering: false, collapsed: new Set(), treeCursor: 0, treeScroll: 0, selected: null,
     file: null, fileError: null, fileLoading: false, expanded: new Map(), mode: opts.mode ?? "split", diffCursor: 0, diffScroll: 0, hscroll: 0,
     search: { open: false, editing: false, query: "", result: null, cursor: 0, scroll: 0, busy: false, error: null, jump: null },
-    picker: null, help: false, message: null,
+    picker: null, graph: null, help: false, message: null,
   };
 }
 
@@ -249,6 +265,33 @@ export function pickerItems(state: State, picker: Picker): Array<PickerItem> {
 export function revLabel(rev: string): string {
   if (rev === WORKTREE || rev === INDEX) return PSEUDO_LABEL[rev];
   return /^[0-9a-f]{40,64}$/.test(rev) ? rev.slice(0, 8) : rev;
+}
+
+// ---------------------------------------------------------------- graph
+
+const graphCache = new WeakMap<ReadonlyArray<GraphCommit>, Array<GraphRow>>();
+
+/** The loaded history with a column and lanes per commit (worked out once per load). */
+export function graphRows(graph: GraphState): Array<GraphRow> {
+  const commits = graph.commits;
+  if (!commits) return [];
+  let rows = graphCache.get(commits);
+  if (!rows) graphCache.set(commits, (rows = layoutGraph(commits)));
+  return rows;
+}
+
+/**
+ * The commits on screen as A and B, and the ones the current diff spans (`git log A..B`).
+ * Uncommitted changes sit on top of HEAD, so a working tree or index side counts as HEAD.
+ */
+export function graphMarks(state: State): { base: string | null; head: string | null; range: Set<string> } {
+  const commits = state.graph?.commits;
+  const cmp = state.compare;
+  if (!commits || !cmp) return { base: null, head: null, range: new Set() };
+  const real = (sha: string) => (isPseudoRev(sha) ? state.info?.headSha ?? null : sha);
+  const base = real(cmp.base.sha);
+  const head = real(cmp.head.sha);
+  return { base, head, range: commitsInRange(commits, base, head) };
 }
 
 // ---------------------------------------------------------------- search
