@@ -126,6 +126,13 @@ For more information, read the Bun API docs in `node_modules/bun-types/docs/**.m
 - The web viewer is the reference for behaviour. `herdr/PARITY.md` lists where the mod still differs and why (e.g. no SQLite, so search scans lines); update it when closing or adding a gap.
 - Test in the running window: open a test tab with `herdr-app do tab.new --name "Diff (test)" --mod git-diff --props '{"folder":"<repo>"}'`, drive it with `herdr-app do git-diff.<command>`, `herdr-app shot`, then switch back and close the tab.
 
+## Terminal viewer (`src/tui/`)
+
+- `git-diff-view --tui` (flags in `src/index.ts`) runs the viewer in the terminal instead of starting the server. It runs the Herdr mod's `herdr/src` (repo layer, diff model, search, syntax) on a local `Host` (`src/tui/host.ts`). Fix shared behaviour there, not in a TUI copy.
+- `host.ts` reads working-tree files only through the server's `readDisk` (realpath and symlink checks), and only for paths under the repository root. Keep it that way.
+- `view.ts` and `state.ts` stay pure (no TTY, no git) so `src/tui/tui.test.ts` can check whole frames. Every string reaches the screen through `fit()` in `ansi.ts`, which turns control characters into visible symbols. Never write repository text to stdout any other way.
+- Test it in a real terminal with an unused Rex tab: `rex window new tui --focus=false --keep-open -c <repo> -- bun <this repo>/src/index.ts --tui`, then `rex send` / `rex send-key` and `rex capture`.
+
 ## Commit flow
 
 When asked to commit / push:

@@ -99,6 +99,36 @@ Pull requests and spaces on other machines use the same code paths as the rest, 
 
 The mod is plain JavaScript in `herdr/git-diff/`; its git, diff, search, tree and graph code is TypeScript in `herdr/src/` plus the shared `src/lib/` and `src/shared/gitText.ts`, bundled into `core.js`. While working on it, `bun run build:herdr --watch` rebuilds and makes Herdr reload the mod on every save.
 
+## In the terminal
+
+The same viewer also runs in your terminal, with no server and no browser. It's handy over SSH or in a tmux pane:
+
+```bash
+git-diff-view --tui                                  # main → working tree, in the current repository
+git-diff-view ~/code/app --tui --base v1.2 --head HEAD
+git-diff-view --tui --pr 123                         # a GitHub pull request (needs gh)
+git-diff-view --tui --unified                        # start in one column instead of side by side
+bun src/index.ts --tui                               # from a checkout, without building
+```
+
+It has the file tree and filter, side-by-side or unified diffs with syntax colours and changed-word highlights, gaps you can open, the Base / Head pickers (working tree and index included), pull requests, search over the changed lines, and the same live updates (every 2 s for anything movable). Press `?` for every key. The main ones:
+
+| Key | Does |
+|---|---|
+| `tab` | switch between the file list and the diff |
+| `↑ ↓` / `j k`, `PgUp PgDn`, `g G` | move |
+| `enter` | open a file, fold a folder, or show the lines hidden in a `⋯` row (`J` / `K` show 20 more) |
+| `,` / `.` or `Shift+F7` / `F7` | previous / next file |
+| `[ ]` | previous / next change in the file |
+| `← →` | scroll long lines sideways in the diff (`0` resets) |
+| `b` / `h`, `x` | pick the base / head revision, swap them |
+| `p` | pick a pull request |
+| `/`, `n N` | search the changed lines, next / previous hit |
+| `f` | filter files by path |
+| `s`, `r`, `q` | side by side ↔ unified, reload, quit |
+
+It reuses the Herdr mod's git layer and diff model (`herdr/src`) on a local process runner, and reads working-tree files through the server's guarded `readDisk`, so the same read-only rules apply. Text from the repository has its control characters drawn as visible symbols (`␛`), so a file can't send escape sequences to your terminal. The commit graph isn't in the terminal version yet. Colours use the 256-colour palette and are tuned for dark themes.
+
 ## GitHub pull requests
 
 If the `upstream` or `origin` remote points at github.com, a **Pull requests** picker appears in the header. It lists open PRs through the GitHub CLI, so [`gh`](https://cli.github.com) must be installed and logged in (`gh auth login`); private repositories work too.
@@ -130,6 +160,12 @@ src/shared/gitText.ts    Pure git-output parsers (name-status, numstat, log, -U0
 src/lib/tree.ts          Changed files → compacted directory tree
 src/lib/graph.ts         Commit graph lane layout, A..B range
 src/components/          RefPicker, PullPicker, CommitGraph, FileTree, DiffSearch, DiffPane
+src/tui/app.ts           Terminal viewer (--tui): loading, live refresh, keys; runs herdr/src's repo layer
+src/tui/state.ts         Its state and derived rows (tree, diff, pickers, search), pure
+src/tui/view.ts          Draws the state as one ANSI string per row, pure (tested without a terminal)
+src/tui/term.ts          Raw mode, alternate screen, key decoding, line-diffing painter
+src/tui/ansi.ts          Styled spans fitted to display columns; control characters made inert
+src/tui/host.ts          Local Host for herdr/src/repo.ts: Bun.spawn plus the server's readDisk
 herdr/build.ts           Bundles herdr/src → herdr/git-diff/core.js; --install links the mod and adds the button, --uninstall undoes it, --watch reloads it
 herdr/layout.ts          Wraps a layout's tab bar block with the Diff button (for the installer's layout copy)
 herdr/src/repo.ts        The mod's git layer: Git + GitHub services as plain async over Herdr's exec / readTextFile

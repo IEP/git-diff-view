@@ -14,8 +14,14 @@ import {
 } from "./server/HostGuard";
 
 const USAGE = `Usage: git-diff-view [repo] [--lan | --host <addr>] [--port <n>] [--allow-host <name>]...
+       git-diff-view [repo] --tui [--base <rev>] [--head <rev> | --pr <n>] [--unified]
 
   repo                 Repository to inspect (default: $REPO, then the current directory)
+  --tui                Browse the diff in this terminal instead of starting the web server
+  --base, --head <rev> Comparison for --tui (default: main → working tree). :worktree and
+                       :index name the working tree and the index
+  --pr <n>             Open a GitHub pull request in --tui (needs gh)
+  --unified            Start --tui in unified layout instead of side by side
   --lan                Listen on every interface (LAN, Tailscale, ...). Same as --host 0.0.0.0
   --host <addr>        Address to listen on (default: $HOST, then 127.0.0.1)
                        e.g. your Tailscale IP, to be reachable from the tailnet only
@@ -33,6 +39,11 @@ const { values: opts, positionals } = (() => {
         port: { type: "string" },
         "allow-host": { type: "string", multiple: true },
         help: { type: "boolean", short: "h" },
+        tui: { type: "boolean" },
+        base: { type: "string" },
+        head: { type: "string" },
+        pr: { type: "string" },
+        unified: { type: "boolean" },
       },
     });
   } catch (e) {
@@ -52,6 +63,21 @@ const probe = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { cwd: repo
 if (probe.exitCode !== 0) {
   console.error(`✖ Not a git repository: ${repoPath}\n\n${USAGE}`);
   process.exit(1);
+}
+
+if (opts.tui) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    console.error("✖ --tui needs an interactive terminal");
+    process.exit(1);
+  }
+  const pr = opts.pr === undefined ? null : Number(opts.pr);
+  if (pr !== null && !(Number.isInteger(pr) && pr > 0)) {
+    console.error(`✖ --pr takes a pull request number\n\n${USAGE}`);
+    process.exit(1);
+  }
+  const { runTui } = await import("./tui/app");
+  await runTui(probe.stdout.toString().trim(), { base: opts.base, head: opts.head, pr, mode: opts.unified ? "unified" : "split" });
+  process.exit(0);
 }
 
 const api = makeApiHandler(repoPath);
