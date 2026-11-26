@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { clean, fit } from "./ansi";
 import { App } from "./app";
+import { layoutFor } from "./state";
 import { bunHost } from "./host";
 import { decodeKeys } from "./term";
 
@@ -17,10 +18,11 @@ describe("decodeKeys", () => {
     expect(decodeKeys("\x1b")).toEqual(["escape"]);
     expect(decodeKeys("日本")).toEqual(["日", "本"]);
   });
-  test("mouse reports become clicks and wheel turns; releases are dropped", () => {
-    expect(decodeKeys("\x1b[<0;12;5M\x1b[<0;12;5m")).toEqual(["mouse click 12 5"]);
+  test("mouse reports become clicks, drags, releases and wheel turns; other buttons are dropped", () => {
+    expect(decodeKeys("\x1b[<0;12;5M\x1b[<0;12;5m")).toEqual(["mouse click 12 5", "mouse release 12 5"]);
     expect(decodeKeys("\x1b[<64;3;4M\x1b[<69;3;4M")).toEqual(["mouse wheelup 3 4", "mouse wheeldown 3 4"]);
     expect(decodeKeys("\x1b[<2;1;1M")).toEqual([]);
+    expect(decodeKeys("\x1b[<32;20;5M\x1b[<0;20;5m")).toEqual(["mouse drag 20 5", "mouse release 20 5"]);
   });
   test("pasted text arrives as characters, without its line breaks", () => {
     expect(decodeKeys("\x1b[200~a\nb\x1b[201~")).toEqual(["a", " ", "b"]);
@@ -160,6 +162,40 @@ describe("terminal viewer (real repository)", () => {
     app.key("mouse click 10 5"); // screen row 5 is the first entry: Working tree
     expect(app.state.picker).toBeNull();
     expect(app.state.head).toBe(":worktree");
+  });
+
+  test("the sidebar resizes by dragging its divider or with < > =", async () => {
+    const app = await open();
+    const side = () => layoutFor(app.state, 100, 30).side;
+    const auto = side();
+    const divider = () => plain(app.frame(100, 30)[5]!).indexOf("│");
+    expect(divider()).toBe(auto);
+    // Press on the divider (1-based column side+1), drag, release.
+    app.key(`mouse click ${auto + 1} 6`);
+    expect(app.state.resizing).toBe(true);
+    app.key("mouse drag 41 6");
+    app.key("mouse release 41 6");
+    expect(app.state.resizing).toBe(false);
+    expect(side()).toBe(40);
+    expect(divider()).toBe(40);
+    // A drag that doesn't start on the divider changes nothing.
+    app.key("mouse drag 60 6");
+    expect(side()).toBe(40);
+    app.key(">");
+    expect(side()).toBe(44);
+    app.key("<");
+    app.key("<");
+    expect(side()).toBe(36);
+    // Limits: the diff keeps 30 columns, the sidebar at least 16.
+    app.key(`mouse click ${divider() + 1} 6`);
+    app.key("mouse drag 99 6");
+    expect(side()).toBe(69);
+    app.key("mouse drag 2 6");
+    expect(side()).toBe(16);
+    app.key("mouse release 2 6");
+    app.key("=");
+    expect(side()).toBe(auto);
+    for (const row of app.frame(100, 30)) expect(Bun.stringWidth(plain(row))).toBe(100);
   });
 
   test("narrow terminals show one pane at a time", async () => {

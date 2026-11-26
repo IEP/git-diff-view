@@ -78,15 +78,17 @@ export function decodeKeys(input: string): Array<Key> {
 }
 
 /**
- * SGR mouse report → "click", "wheelup" or "wheeldown" (left-button presses and the
- * wheel; releases, other buttons and drags are ignored). Shift / alt / ctrl don't matter.
+ * SGR mouse report → "click", "release" or "drag" (left button), "wheelup" or
+ * "wheeldown". Other buttons are ignored; shift / alt / ctrl don't matter.
  */
 function mouseEvent(code: number, press: boolean): string | null {
-  const button = code & ~(4 | 8 | 16);
+  const motion = (code & 32) !== 0;
+  const button = code & ~(4 | 8 | 16 | 32);
   if (button === 64) return "wheelup";
   if (button === 65) return "wheeldown";
-  if (button === 0 && press) return "click";
-  return null;
+  if (button !== 0) return null;
+  if (motion) return "drag";
+  return press ? "click" : "release";
 }
 
 /** A decoded mouse key: `mouse <event> <column> <row>`, 1-based like the terminal's. */
@@ -115,7 +117,7 @@ export function openTerminal(handlers: { onKeys(keys: Array<Key>): void; onResiz
   const restore = () => {
     if (restored) return;
     restored = true;
-    out.write("\x1b[?1006l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[0m\x1b[?1049l");
+    out.write("\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?2004l\x1b[?25h\x1b[0m\x1b[?1049l");
     try {
       input.setRawMode(false);
     } catch {
@@ -127,8 +129,8 @@ export function openTerminal(handlers: { onKeys(keys: Array<Key>): void; onResiz
   input.setRawMode(true);
   input.setEncoding("utf8");
   input.resume();
-  // Alternate screen, hidden cursor, bracketed paste, mouse clicks and wheel (SGR encoding).
-  out.write("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[2J");
+  // Alternate screen, hidden cursor, bracketed paste, mouse clicks, drags and wheel (SGR encoding).
+  out.write("\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[2J");
 
   input.on("data", (data: string) => handlers.onKeys(decodeKeys(data)));
   out.on("resize", () => {

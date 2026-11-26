@@ -115,7 +115,7 @@ const centered = (text: string, cols: number) => {
 function panes(state: State, L: Layout): Array<string> {
   const left = L.side > 0 ? (state.search.open ? searchPane(state, L) : treePane(state, L)) : null;
   const right = L.diffWidth > 0 ? diffPane(state, L) : null;
-  const rule = fit([{ text: "│", style: { fg: C.rule } }], 1);
+  const rule = fit([{ text: "│", style: { fg: state.resizing ? C.accent : C.rule, bold: state.resizing } }], 1);
   const out: Array<string> = [];
   for (let r = 0; r < L.body; r++) out.push((left ? left[r]! + (right ? rule : "") : "") + (right ? right[r]! : ""));
   return out;
@@ -367,6 +367,7 @@ const HELP: ReadonlyArray<readonly [string, string]> = [
   ["n / N", "next / previous search hit"],
   [", .", "previous / next file (also Shift+F7 / F7)"],
   ["s", "side by side ↔ unified"],
+  ["< >  =", "narrower / wider sidebar, automatic width (or drag the │ divider)"],
   ["r", "reload now (live comparisons also refresh every 2 s)"],
   ["q  ctrl+c", "quit"],
   ["mouse", "click a file, a ⋯ row, a search hit or a picker entry; click the revisions or the layout in the top bar; the wheel scrolls"],

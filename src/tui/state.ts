@@ -70,6 +70,10 @@ export interface State {
   loading: boolean;
 
   focus: Focus;
+  /** Sidebar columns set by dragging the divider or `<` / `>`; null is automatic. */
+  sideWidth: number | null;
+  /** The divider is being dragged. */
+  resizing: boolean;
   filter: string;
   /** Typing in the filter line. */
   filtering: boolean;
@@ -99,7 +103,7 @@ export function initialState(root: string, opts: { base?: string; head?: string;
     root, info: null, refs: null, fatal: null,
     base: opts.base ?? "", head: opts.head ?? "", pr: opts.pr ?? null, pull: null, pullError: null, pulls: null, pullsError: null,
     compare: null, compareError: null, loading: false,
-    focus: "tree", filter: "", filtering: false, collapsed: new Set(), treeCursor: 0, treeScroll: 0, selected: null,
+    focus: "tree", sideWidth: null, resizing: false, filter: "", filtering: false, collapsed: new Set(), treeCursor: 0, treeScroll: 0, selected: null,
     file: null, fileError: null, fileLoading: false, expanded: new Map(), mode: opts.mode ?? "split", diffCursor: 0, diffScroll: 0, hscroll: 0,
     search: { open: false, editing: false, query: "", index: null, indexedPatch: null, result: null, cursor: 0, scroll: 0, busy: false, error: null, jump: null },
     picker: null, help: false, message: null,
@@ -125,10 +129,15 @@ export function layoutFor(state: State, cols: number, rows: number): Layout {
   const body = Math.max(1, rows - 2);
   // Narrow terminals show one pane at a time: the focused one.
   const narrow = cols < 70;
-  const side = narrow ? (state.focus === "tree" ? cols : 0) : Math.min(48, Math.max(22, Math.round(cols * 0.28)));
+  const side = narrow ? (state.focus === "tree" ? cols : 0) : sideWidth(state.sideWidth ?? Math.min(48, Math.max(22, Math.round(cols * 0.28))), cols);
   const diffLeft = side === 0 ? 0 : side + 1;
   return { cols, rows, body, side, diffLeft, diffWidth: Math.max(0, cols - diffLeft), diffBody: Math.max(1, body - 1) };
 }
+
+/** The sidebar's width kept within reach: room for names, and for the diff beside it. */
+export const sideWidth = (want: number, cols: number) => Math.max(MIN_SIDE, Math.min(Math.round(want), cols - MIN_DIFF - 1));
+const MIN_SIDE = 16;
+const MIN_DIFF = 30;
 
 // ---------------------------------------------------------------- tree
 

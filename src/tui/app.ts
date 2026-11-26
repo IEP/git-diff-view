@@ -11,13 +11,15 @@ import { expand, findLine, findPair, parseFilePatch, splitLines, untab, type Gap
 import { buildIndex, search } from "../../herdr/src/search";
 import { languageFor, MAX_SYNTAX_CHARS, SyntaxDoc } from "../../herdr/src/syntax";
 import { bunHost } from "./host";
-import { diffRows, filteredTree, type DiffRows, initialState, layoutFor, pickerItems, searchRows, selectedFile, treeRows, type FileView, type Mode, type State, type SyntaxSide } from "./state";
+import { diffRows, filteredTree, type DiffRows, initialState, sideWidth, layoutFor, pickerItems, searchRows, selectedFile, treeRows, type FileView, type Mode, type State, type SyntaxSide } from "./state";
 import { openTerminal, parseMouse, type Key, type Terminal } from "./term";
 import { frame, headerAction } from "./view";
 
 const REFRESH_MS = 2000;
 const SEARCH_LINES = 200_000;
 const SEARCH_DELAY_MS = 120;
+/** Columns `<` / `>` resize the sidebar by. */
+const SIDE_STEP = 4;
 /** Rows a wheel notch scrolls. */
 const WHEEL_LINES = 3;
 /** Time per frame spent colouring the rows on screen; the rest follows on the next tick. */
@@ -549,6 +551,15 @@ export class App {
         s.diffScroll = Math.max(0, i - offset);
         return;
       }
+      case "<":
+      case ">":
+      case "=": {
+        const cols = this.term?.cols ?? this.size?.cols ?? 80;
+        const now = layoutFor(s, cols, 24).side;
+        if (now === 0 || now === cols) return; // narrow terminal: one pane at a time
+        s.sideWidth = k === "=" ? null : sideWidth(now + (k === ">" ? SIDE_STEP : -SIDE_STEP), cols);
+        return;
+      }
       case "r":
         s.message = "Reloading…";
         void this.refresh({ force: true });
@@ -598,7 +609,20 @@ export class App {
     // A click elsewhere finishes typing in the filter or search line, as Enter would.
     if (click && s.filtering) this.filterKey("enter");
     if (click && s.search.editing) this.searchKey("enter");
+    // Dragging the divider resizes the sidebar; drags and releases elsewhere do nothing.
+    if (event === "drag") {
+      if (s.resizing) s.sideWidth = sideWidth(x, cols);
+      return;
+    }
+    if (event === "release") {
+      s.resizing = false;
+      return;
+    }
     if (s.fatal) return;
+    if (click && !s.help && !s.picker && y > 0 && L.side > 0 && L.diffWidth > 0 && x === L.side) {
+      s.resizing = true;
+      return;
+    }
     if (s.help) {
       if (click) s.help = false;
       return;
